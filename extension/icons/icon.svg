@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none">
+  <!-- Gradient definitions -->
+  <defs>
+    <linearGradient id="trunkGradient" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" stop-color="#5a9a8a"/>
+      <stop offset="100%" stop-color="#3d7a6a"/>
+    </linearGradient>
+    <linearGradient id="leafLeft" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#7db9a8"/>
+      <stop offset="100%" stop-color="#5a9a8a"/>
+    </linearGradient>
+    <linearGradient id="leafRight" x1="100%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#6a8a7a"/>
+      <stop offset="100%" stop-color="#4a8a6a"/>
+    </linearGradient>
+    <linearGradient id="branchGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#7db9a8"/>
+      <stop offset="100%" stop-color="#5a9a8a"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Tree Trunk -->
+  <path d="M45 95 L45 65 L42 62 L42 55 L50 45 L58 55 L58 62 L55 65 L55 95 L60 95 L60 100 L40 100 L40 95 Z"
+        fill="url(#trunkGradient)" filter="url(#glow)"/>
+
+  <!-- Main branches -->
+  <path d="M50 50 L35 35" stroke="url(#branchGradient)" stroke-width="2" stroke-linecap="round"/>
+  <path d="M50 50 L65 35" stroke="url(#branchGradient)" stroke-width="2" stroke-linecap="round"/>
+  <path d="M50 40 L50 20" stroke="url(#branchGradient)" stroke-width="2" stroke-linecap="round"/>
+  <path d="M42 55 L25 40" stroke="url(#branchGradient)" stroke-width="1.5" stroke-linecap="round"/>
+  <path d="M58 55 L75 40" stroke="url(#branchGradient)" stroke-width="1.5" stroke-linecap="round"/>
+
+  <!-- Left leaves (geometric style) -->
+  <path d="M25 40 L20 25 L30 20 L35 35 Z" fill="url(#leafLeft)" filter="url(#glow)"/>
+  <path d="M35 35 L30 15 L42 12 L45 30 Z" fill="url(#leafLeft)" filter="url(#glow)"/>
+  <path d="M20 25 L12 18 L15 8 L25 15 Z" fill="url(#leafLeft)" filter="url(#glow)"/>
+
+  <!-- Right leaves (geometric style) -->
+  <path d="M75 40 L80 25 L70 20 L65 35 Z" fill="url(#leafRight)" filter="url(#glow)"/>
+  <path d="M65 35 L70 15 L58 12 L55 30 Z" fill="url(#leafRight)" filter="url(#glow)"/>
+  <path d="M80 25 L88 18 L85 8 L75 15 Z" fill="url(#leafRight)" filter="url(#glow)"/>
+
+  <!-- Top/Center leaves -->
+  <path d="M50 20 L45 5 L55 5 Z" fill="url(#leafLeft)" filter="url(#glow)"/>
+  <path d="M42 12 L38 2 L48 5 Z" fill="url(#leafRight)" filter="url(#glow)"/>
+  <path d="M58 12 L62 2 L52 5 Z" fill="url(#leafLeft)" filter="url(#glow)"/>
+
+  <!-- Connection dots (tech/circuit style) -->
+  <circle cx="50" cy="50" r="2" fill="#9acaaa"/>
+  <circle cx="35" cy="35" r="1.5" fill="#9acaaa"/>
+  <circle cx="65" cy="35" r="1.5" fill="#9acaaa"/>
+  <circle cx="50" cy="20" r="1.5" fill="#9acaaa"/>
+  <circle cx="25" cy="40" r="1.5" fill="#9acaaa"/>
+  <circle cx="75" cy="40" r="1.5" fill="#9acaaa"/>
+</svg>
