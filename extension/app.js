@@ -594,6 +594,8 @@ function getCustomTitle(title, url) {
         // 特殊名称映射表（覆盖自动提取）
         const SPECIAL_NAMES = {
           'fp/formHome': '首页',
+          'fp/svsmng': '服务配置管理',
+          'fp/printing': '打印模板管理',
         };
 
         // 尝试从映射表获取友好名称
