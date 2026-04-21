@@ -483,6 +483,9 @@ const LANDING_PAGE_PATTERNS = [
   { hostname: 'www.linkedin.com', pathExact: ['/'] },
   { hostname: 'github.com', pathExact: ['/'] },
   { hostname: 'www.youtube.com', pathExact: ['/'] },
+  { hostname: 'ehall.cdu.edu.cn', test: (p, h) => h.includes('act=fp/formHome') },
+  { hostname: 'www.bilibili.com', pathExact: ['/'] },
+  { hostname: 'gitcode.com', pathExact: ['/'] },
 ];
 
 function isLandingPage(url) {
