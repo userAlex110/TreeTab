@@ -1,25 +1,34 @@
 /* ============================================================
-   TreeTab —— 整合页面样式（上方标签组 + 下方域名分组）
+   TreeTab — New Tab page styles (Tab Groups + Domain Groups)
    ============================================================ */
 
 :root {
-  /* 淡绿色主题配色 */
-  --ink: #1a2e1a;              /* 深绿色文字 */
-  --paper: #f5f8f5;            /* 淡绿背景 */
-  --warm-gray: #e0ebe3;        /* 淡绿灰 */
-  --muted: #7a9a7a;            /* 柔和绿 */
-  --accent-amber: #c8713a;     /* 琥珀色（保留用于关闭按钮） */
-  --accent-sage: #7db9a8;      /* 主色调 - 柔和薄荷绿 */
-  --accent-slate: #6a8a7a;     /* 次要绿 */
-  --accent-rose: #b35a5a;      /* 玫瑰红（保留） */
-  --status-active: #5a9a7a;    /* 激活状态绿 */
-  --status-cooling: #b8a85e;   /* 冷却黄绿 */
-  --status-abandoned: #b35a5a; /* 放弃红 */
-  --card-bg: #ffffff;          /* 纯白卡片 */
-  --card-border: #d4e5d8;      /* 卡片边框淡绿 */
+  /* Sage green theme */
+  --ink: #1a2e1a;
+  --paper: #f5f8f5;
+  --warm-gray: #e0ebe3;
+  --muted: #7a9a7a;
+  --accent-amber: #c8713a;
+  --accent-sage: #7db9a8;      /* Primary accent */
+  --accent-slate: #6a8a7a;
+  --accent-rose: #b35a5a;
+  --status-active: #5a9a7a;
+  --status-cooling: #b8a85e;
+  --status-abandoned: #b35a5a;
+  --card-bg: #ffffff;
+  --card-border: #d4e5d8;
   --shadow: rgba(90, 130, 100, 0.08);
 
-  /* Chrome 标签组颜色 */
+  /* RGB tuples for rgba() usage */
+  --rgb-ink: 26, 46, 26;
+  --rgb-muted: 122, 154, 122;
+  --rgb-amber: 200, 113, 58;
+  --rgb-rose: 179, 90, 90;
+  --rgb-sage: 125, 185, 168;
+  --rgb-active: 90, 154, 122;
+  --rgb-cooling: 184, 168, 94;
+
+  /* Chrome tab group colors */
   --group-grey: #5f6368;
   --group-blue: #1a73e8;
   --group-red: #d93025;
@@ -30,7 +39,7 @@
   --group-cyan: #007b83;
 }
 
-/* 深色模式变量 */
+/* Dark mode */
 [data-theme="dark"] {
   --ink: #e8f0e8;
   --paper: #1a1f1a;
@@ -46,6 +55,14 @@
   --card-bg: #242a24;
   --card-border: #3a4a3a;
   --shadow: rgba(0, 0, 0, 0.3);
+
+  --rgb-ink: 232, 240, 232;
+  --rgb-muted: 138, 170, 138;
+  --rgb-amber: 212, 138, 94;
+  --rgb-rose: 199, 106, 106;
+  --rgb-sage: 90, 154, 138;
+  --rgb-active: 106, 186, 138;
+  --rgb-cooling: 200, 184, 110;
 }
 
 * {
@@ -62,7 +79,7 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* 纸张纹理背景 */
+/* Paper texture background */
 body::before {
   content: '';
   position: fixed;
@@ -80,7 +97,7 @@ body::before {
   padding: 48px 32px 80px;
 }
 
-/* ---- 头部 ---- */
+/* ---- Header ---- */
 header {
   display: flex;
   justify-content: space-between;
@@ -106,7 +123,7 @@ header {
   letter-spacing: 0.5px;
 }
 
-/* 主题切换按钮 */
+/* Theme toggle button */
 .header-right {
   display: flex;
   align-items: center;
@@ -137,7 +154,7 @@ header {
   height: 20px;
 }
 
-/* 深色模式下按钮样式 */
+/* Dark mode button style */
 [data-theme="dark"] .theme-toggle {
   border-color: var(--card-border);
   background: var(--card-bg);
@@ -181,10 +198,10 @@ header {
   white-space: nowrap;
 }
 
-/* ---- TreeTab 重复提示 ---- */
+/* ---- TreeTab duplicate banner ---- */
 .tab-cleanup-banner {
-  background: linear-gradient(135deg, rgba(125, 185, 168, 0.08), rgba(125, 185, 168, 0.15));
-  border: 1px solid rgba(125, 185, 168, 0.25);
+  background: linear-gradient(135deg, rgba(var(--rgb-sage),0.08), rgba(var(--rgb-sage),0.15));
+  border: 1px solid rgba(var(--rgb-sage),0.25);
   border-radius: 8px;
   padding: 16px 24px;
   display: flex;
@@ -199,7 +216,7 @@ header {
   width: 36px;
   height: 36px;
   border-radius: 50%;
-  background: rgba(200, 113, 58, 0.1);
+  background: rgba(var(--rgb-amber),0.1);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -226,7 +243,7 @@ header {
 .tab-cleanup-btn:hover { opacity: 0.85; transform: translateY(-1px); }
 
 /* ================================================================
-   SECTION 2: TAB GROUPS —— 标签组（瀑布流布局）
+   SECTION 1: TAB GROUPS
    ================================================================ */
 
 .groups-grid {
@@ -235,7 +252,7 @@ header {
   margin-bottom: 20px;
 }
 
-/* 分组卡片 */
+/* Group card */
 .group-card {
   background: var(--card-bg);
   border: 1px solid var(--warm-gray);
@@ -255,11 +272,11 @@ header {
 }
 
 .group-card.drag-over {
-  border-color: var(--accent-amber);
-  box-shadow: 0 0 0 2px rgba(200, 113, 58, 0.3);
+  border-color: var(--accent-sage);
+  box-shadow: 0 0 0 2px rgba(var(--rgb-sage), 0.3);
 }
 
-/* 分组头部 */
+/* Group header */
 .group-header {
   display: flex;
   align-items: center;
@@ -298,12 +315,12 @@ header {
 .group-count {
   font-size: 11px;
   color: var(--muted);
-  background: rgba(154, 145, 138, 0.1);
+  background: rgba(var(--rgb-muted), 0.1);
   padding: 2px 8px;
   border-radius: 10px;
 }
 
-/* 分组操作按钮 */
+/* Group action buttons */
 .group-actions {
   display: flex;
   align-items: center;
@@ -337,7 +354,7 @@ header {
 }
 
 .group-action-btn:hover {
-  background: rgba(154, 145, 138, 0.1);
+  background: rgba(var(--rgb-muted), 0.1);
 }
 
 .group-edit-btn:hover {
@@ -346,10 +363,10 @@ header {
 
 .group-close-btn:hover {
   color: var(--status-abandoned);
-  background: rgba(179, 90, 90, 0.1);
+  background: rgba(var(--rgb-rose), 0.1);
 }
 
-/* 编辑组名输入框 */
+/* Edit group name input */
 .group-title-input {
   font-size: 14px;
   font-weight: 600;
@@ -373,7 +390,7 @@ header {
   color: var(--accent-amber);
 }
 
-/* 分组内标签列表 */
+/* Group tab list */
 .group-tabs-list {
   display: flex;
   flex-direction: column;
@@ -454,20 +471,20 @@ header {
 .group-tab-action svg { width: 12px; height: 12px; }
 
 .group-tab-ungroup:hover {
-  background: rgba(154, 145, 138, 0.15);
+  background: rgba(var(--rgb-muted), 0.15);
   color: var(--accent-amber);
 }
 
 .group-tab-close:hover {
-  background: rgba(179, 90, 90, 0.1);
+  background: rgba(var(--rgb-rose), 0.1);
   color: var(--status-abandoned);
 }
 
-/* 新建分组放置区 */
+/* New group drop zone */
 .new-group-dropzone {
   padding: 24px;
-  background: linear-gradient(135deg, rgba(90, 122, 98, 0.05), rgba(90, 122, 98, 0.1));
-  border: 2px dashed rgba(90, 122, 98, 0.3);
+  background: linear-gradient(135deg, rgba(var(--rgb-sage), 0.05), rgba(var(--rgb-sage), 0.1));
+  border: 2px dashed rgba(var(--rgb-sage), 0.3);
   border-radius: 12px;
   text-align: center;
   transition: all 0.2s;
@@ -476,8 +493,8 @@ header {
 }
 
 .new-group-dropzone.drag-over {
-  background: linear-gradient(135deg, rgba(90, 122, 98, 0.12), rgba(90, 122, 98, 0.2));
-  border-color: var(--group-green);
+  background: linear-gradient(135deg, rgba(var(--rgb-sage), 0.12), rgba(var(--rgb-sage), 0.2));
+  border-color: var(--accent-sage);
   border-style: solid;
 }
 
@@ -493,11 +510,11 @@ header {
 .new-group-content svg {
   width: 20px;
   height: 20px;
-  color: var(--group-green);
+  color: var(--accent-sage);
 }
 
 /* ================================================================
-   SECTION 2: DOMAIN GROUPS —— 原有按域名分组
+   SECTION 2: DOMAIN GROUPS
    ================================================================ */
 
 .missions {
@@ -508,11 +525,11 @@ header {
 .mission-card {
   background: var(--card-bg);
   border: 1px solid var(--warm-gray);
-  border-radius: 8px;
-  padding: 16px 18px;
+  border-radius: 12px;
+  padding: 16px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
   transition: box-shadow 0.25s ease, transform 0.25s ease;
   cursor: pointer;
   position: relative;
@@ -574,9 +591,9 @@ header {
   border-radius: 3px;
 }
 
-.mission-tag.active { color: var(--status-active); background: rgba(61, 122, 74, 0.08); }
-.mission-tag.cooling { color: var(--status-cooling); background: rgba(184, 137, 46, 0.08); }
-.mission-tag.abandoned { color: var(--status-abandoned); background: rgba(179, 90, 90, 0.08); }
+.mission-tag.active { color: var(--status-active); background: rgba(var(--rgb-active), 0.08); }
+.mission-tag.cooling { color: var(--status-cooling); background: rgba(var(--rgb-cooling), 0.08); }
+.mission-tag.abandoned { color: var(--status-abandoned); background: rgba(var(--rgb-rose), 0.08); }
 
 .open-tabs-badge {
   display: inline-flex;
@@ -585,7 +602,7 @@ header {
   font-size: 10px;
   font-weight: 500;
   color: var(--accent-amber);
-  background: rgba(200, 113, 58, 0.08);
+  background: rgba(var(--rgb-amber),0.08);
   padding: 2px 8px;
   border-radius: 3px;
 }
@@ -602,7 +619,7 @@ header {
   padding: 8px 4px;
   border-radius: 0;
   border: none;
-  border-bottom: 1px solid rgba(154, 145, 138, 0.1);
+  border-bottom: 1px solid rgba(var(--rgb-muted), 0.1);
   position: relative;
   display: flex;
   align-items: center;
@@ -624,7 +641,7 @@ header {
 }
 
 .chip-dupe-badge { color: var(--accent-amber); font-weight: 600; }
-.chip-has-dupes { border-color: rgba(200, 113, 58, 0.25); }
+.chip-has-dupes { border-color: rgba(var(--rgb-amber),0.25); }
 
 .chip-actions {
   display: flex;
@@ -650,16 +667,16 @@ header {
 }
 
 .chip-action svg { width: 15px; height: 15px; }
-.chip-action:hover { opacity: 1; background: rgba(154, 145, 138, 0.1); }
-.chip-close:hover { color: var(--status-abandoned); background: rgba(179, 90, 90, 0.08); }
+.chip-action:hover { opacity: 1; background: rgba(var(--rgb-muted), 0.1); }
+.chip-close:hover { color: var(--status-abandoned); background: rgba(var(--rgb-rose), 0.08); }
 
 .page-chip.clickable { cursor: pointer; transition: background 0.15s ease; }
-.page-chip.clickable:hover { background: rgba(200, 113, 58, 0.04); }
+.page-chip.clickable:hover { background: rgba(var(--rgb-amber),0.04); }
 
 .page-chip.dragging {
   opacity: 0.5;
   transform: scale(0.95);
-  box-shadow: 0 4px 12px rgba(26, 22, 19, 0.1);
+  box-shadow: 0 4px 12px rgba(var(--rgb-ink), 0.1);
 }
 
 .page-chip-overflow {
@@ -695,12 +712,12 @@ header {
 .action-btn.primary:hover { opacity: 0.85; }
 
 .action-btn.close-tabs {
-  border-color: rgba(200, 113, 58, 0.3);
+  border-color: rgba(var(--rgb-amber),0.3);
   color: var(--accent-amber);
-  background: rgba(200, 113, 58, 0.04);
+  background: rgba(var(--rgb-amber),0.04);
 }
 
-.action-btn.close-tabs:hover { background: rgba(200, 113, 58, 0.1); border-color: var(--accent-amber); }
+.action-btn.close-tabs:hover { background: rgba(var(--rgb-amber),0.1); border-color: var(--accent-amber); }
 
 /* Empty State */
 .missions-empty-state {
@@ -719,9 +736,9 @@ header {
   width: 56px;
   height: 56px;
   border-radius: 50%;
-  background: rgba(90, 122, 98, 0.1);
-  border: 1.5px solid rgba(90, 122, 98, 0.3);
-  box-shadow: 0 0 0 8px rgba(90, 122, 98, 0.05), 0 0 0 16px rgba(90, 122, 98, 0.03);
+  background: rgba(var(--rgb-sage), 0.1);
+  border: 1.5px solid rgba(var(--rgb-sage), 0.3);
+  box-shadow: 0 0 0 8px rgba(var(--rgb-sage), 0.05), 0 0 0 16px rgba(var(--rgb-sage), 0.03);
   display: flex;
   align-items: center;
   justify-content: center;

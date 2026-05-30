@@ -1,20 +1,20 @@
 /* ================================================================
-   TreeTab —— 整合版本
-   上方：浏览器标签组（横向滚动，可拖拽管理）
-   下方：按域名分组的标签页（原有功能）
+   TreeTab — New Tab Dashboard
+   Top: Browser tab groups (masonry layout, drag to manage)
+   Bottom: Domain-grouped tabs (original feature)
 
-   功能：
-   1. 显示浏览器自带的标签组，支持拖拽管理
-   2. 按域名分组展示所有标签页
-   3. 主页特殊分组
-   4. 重复标签检测
-   5. 关闭动效（音效 + 彩纸）
+   Features:
+   1. Display browser tab groups with drag-and-drop management
+   2. Group tabs by domain
+   3. Landing page detection
+   4. Duplicate tab detection
+   5. Close animation (sound + confetti)
    ================================================================ */
 
 'use strict';
 
 // ================================================================
-// 全局状态
+// Global state
 // ================================================================
 
 let allTabs = [];
@@ -25,7 +25,7 @@ let draggedTabId = null;
 const GROUP_COLORS = ['grey', 'blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan'];
 
 // ================================================================
-// 数据获取
+// Data fetching
 // ================================================================
 
 async function fetchData() {
@@ -36,7 +36,7 @@ async function fetchData() {
       chrome.tabGroups.query({ windowId: currentWindow.id })
     ]);
 
-    // 过滤掉内部页面
+    // Filter out internal pages
     allTabs = tabs.filter(tab => {
       const url = tab.url || '';
       if (url === 'chrome://newtab/') return false;
@@ -52,21 +52,21 @@ async function fetchData() {
 
     allGroups = groups;
 
-    // 更新统计
+    // Update stats
     const tabCount = allTabs.length;
     document.getElementById('statTabs').textContent = tabCount;
     updateTabCountBadge(tabCount);
 
     return { tabs: allTabs, groups: allGroups };
   } catch (err) {
-    console.error('[TreeTab] 获取数据失败:', err);
-    showToast('获取数据失败');
+    console.error('[TreeTab] Failed to fetch data:', err);
+    showToast('Failed to fetch data');
     return { tabs: [], groups: [] };
   }
 }
 
 // ================================================================
-// 标签组区域渲染（上方）
+// Tab Groups rendering (top section)
 // ================================================================
 
 function renderGroups() {
@@ -76,7 +76,7 @@ function renderGroups() {
   if (!container) return;
   container.innerHTML = '';
 
-  // 统计有标签的组
+  // Count groups with tabs
   const groupTabsMap = {};
   for (const tab of allTabs) {
     if (tab.groupId && tab.groupId !== -1) {
@@ -86,15 +86,15 @@ function renderGroups() {
   }
 
   const activeGroups = allGroups.filter(g => groupTabsMap[g.id]?.length > 0);
-  countEl.textContent = `${activeGroups.length} 个分组`;
+  countEl.textContent = `${activeGroups.length} groups`;
 
-  // 渲染每个组
+  // Render each group
   for (const group of activeGroups) {
     const groupCard = createGroupCard(group, groupTabsMap[group.id]);
     container.appendChild(groupCard);
   }
 
-  // 未分组的标签也显示一个特殊卡片
+  // Show ungrouped tabs as a special card
   const ungroupedTabs = allTabs.filter(t => !t.groupId || t.groupId === -1);
   if (ungroupedTabs.length > 0) {
     const ungroupedCard = createUngroupedCard(ungroupedTabs);
@@ -111,14 +111,14 @@ function createGroupCard(group, tabs) {
   header.className = 'group-header';
   header.innerHTML = `
     <div class="group-color group-color-${group.color}"></div>
-    <div class="group-title" data-group-id="${group.id}">${group.title || '未命名分组'}</div>
+    <div class="group-title" data-group-id="${group.id}">${group.title || 'Unnamed Group'}</div>
     <div class="group-actions">
-      <button class="group-action-btn group-edit-btn" data-action="edit-group-name" data-group-id="${group.id}" title="重命名">
+      <button class="group-action-btn group-edit-btn" data-action="edit-group-name" data-group-id="${group.id}" title="Rename">
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.863 4.487Zm0 0L19.5 7.125" />
         </svg>
       </button>
-      <button class="group-action-btn group-close-btn" data-action="delete-group" data-group-id="${group.id}" title="删除分组">
+      <button class="group-action-btn group-close-btn" data-action="delete-group" data-group-id="${group.id}" title="Delete group">
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" />
         </svg>
@@ -127,7 +127,7 @@ function createGroupCard(group, tabs) {
     <div class="group-count">${tabs.length}</div>
   `;
 
-  // 点击组名也可以编辑
+  // Click group name to edit
   const titleEl = header.querySelector('.group-title');
   titleEl.addEventListener('click', () => {
     editGroupName(group.id, titleEl);
@@ -144,7 +144,7 @@ function createGroupCard(group, tabs) {
   card.appendChild(header);
   card.appendChild(tabsList);
 
-  // 拖拽事件
+  // Drag events
   setupDropZone(card, group.id);
 
   return card;
@@ -159,7 +159,7 @@ function createUngroupedCard(tabs) {
   header.className = 'group-header';
   header.innerHTML = `
     <div class="group-color group-color-ungrouped"></div>
-    <div class="group-title">未分组</div>
+    <div class="group-title">Ungrouped</div>
     <div class="group-count">${tabs.length}</div>
   `;
 
@@ -174,7 +174,7 @@ function createUngroupedCard(tabs) {
   card.appendChild(header);
   card.appendChild(tabsList);
 
-  // 未分组区域也支持放置（移动过来就是取消分组）
+  // Drop here to ungroup
   setupUngroupedDropZone(card);
 
   return card;
@@ -196,14 +196,14 @@ function createGroupTabElement(tab) {
     faviconUrl = tab.favIconUrl || '';
   }
 
-  const rawTitle = stripTitleSuffix(tab.title || tab.url || '无标题');
+  const rawTitle = stripTitleSuffix(tab.title || tab.url || 'Untitled');
   const title = getCustomTitle(rawTitle, tab.url);
 
   el.innerHTML = `
     <img class="group-tab-favicon" src="${faviconUrl}" alt="" onerror="this.style.display='none'">
     <div class="group-tab-title" title="${(title || '').replace(/"/g, '&quot;')}">${title}</div>
     <div class="group-tab-actions">
-      <button class="group-tab-action group-tab-close" data-tab-id="${tab.id}" title="关闭标签页">
+      <button class="group-tab-action group-tab-close" data-tab-id="${tab.id}" title="Close tab">
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" />
         </svg>
@@ -211,20 +211,20 @@ function createGroupTabElement(tab) {
     </div>
   `;
 
-  // 点击切换标签页
+  // Click to switch to tab
   el.addEventListener('click', (e) => {
     if (e.target.closest('.group-tab-action')) return;
     chrome.tabs.update(tab.id, { active: true });
   });
 
-  // 关闭按钮（X）- 完全关闭标签页
+  // Close button — fully close tab
   const closeBtn = el.querySelector('.group-tab-close');
   closeBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     closeTab(tab.id, el);
   });
 
-  // 拖拽事件
+  // Drag events
   el.addEventListener('dragstart', handleDragStart);
   el.addEventListener('dragend', handleDragEnd);
 
@@ -232,7 +232,7 @@ function createGroupTabElement(tab) {
 }
 
 // ================================================================
-// 拖拽逻辑
+// Drag logic
 // ================================================================
 
 function handleDragStart(e) {
@@ -257,12 +257,12 @@ function handleDragEnd(e) {
   draggedTabId = null;
 }
 
-// 域名分组标签页的拖拽处理
+// Domain group tab drag handling
 function handleDomainDragStart(e) {
   const chip = e.target.closest('.page-chip');
   if (!chip) return;
 
-  // 获取 tab ID（从 data 属性）
+  // Get tab ID from data attribute
   const tabId = parseInt(chip.dataset.tabId, 10);
   if (!tabId || isNaN(tabId)) return;
 
@@ -272,8 +272,8 @@ function handleDomainDragStart(e) {
   e.dataTransfer.effectAllowed = 'move';
   e.dataTransfer.setData('text/plain', String(tabId));
 
-  // 拖拽时显示提示
-  showToast('拖拽到下方标签组或新建分组区域');
+  // Show hint during drag
+  showToast('Drop onto a group or the new group zone');
 }
 
 function handleDomainDragEnd(e) {
@@ -312,11 +312,11 @@ function setupDropZone(element, groupId) {
 
     try {
       await chrome.tabs.group({ groupId, tabIds: [tabId] });
-      showToast('已移动到分组');
+      showToast('Moved to group');
       await refreshAll();
     } catch (err) {
-      console.error('移动失败:', err);
-      showToast('移动失败');
+      console.error('Move failed:', err);
+      showToast('Move failed');
     }
   });
 }
@@ -346,16 +346,16 @@ function setupUngroupedDropZone(element) {
 
     try {
       await chrome.tabs.ungroup(tabId);
-      showToast('已移出分组');
+      showToast('Removed from group');
       await refreshAll();
     } catch (err) {
-      console.error('移动失败:', err);
-      showToast('移动失败');
+      console.error('Move failed:', err);
+      showToast('Move failed');
     }
   });
 }
 
-// 新建分组放置区
+// New group drop zone setup
 function setupNewGroupDropzone() {
   const dropzone = document.getElementById('newGroupDropzone');
   if (!dropzone) return;
@@ -384,24 +384,24 @@ function setupNewGroupDropzone() {
       const newGroupId = await chrome.tabs.group({ tabIds: [tabId] });
       await chrome.tabGroups.update(newGroupId, {
         color: randomColor,
-        title: '新分组'
+        title: 'New Group'
       });
-      showToast('已创建新分组');
+      showToast('New group created');
       await refreshAll();
     } catch (err) {
-      console.error('创建分组失败:', err);
-      showToast('创建分组失败');
+      console.error('Failed to create group:', err);
+      showToast('Failed to create group');
     }
   });
 }
 
 // ================================================================
-// 标签组操作函数
+// Tab group operations
 // ================================================================
 
 /**
  * editGroupName(groupId, titleEl)
- * 编辑标签组名称
+ * * Edit a tab group name
  */
 async function editGroupName(groupId, titleEl) {
   const currentTitle = titleEl.textContent;
@@ -410,32 +410,32 @@ async function editGroupName(groupId, titleEl) {
   input.value = currentTitle;
   input.className = 'group-title-input';
 
-  // 替换标题为输入框
+  // Replace title with input
   titleEl.replaceWith(input);
   input.focus();
   input.select();
 
-  // 保存函数
+  // Save function
   const save = async () => {
     const newTitle = input.value.trim();
     if (newTitle && newTitle !== currentTitle) {
       try {
         await chrome.tabGroups.update(groupId, { title: newTitle });
-        showToast('分组名称已更新');
+        showToast('Group renamed');
         await refreshAll();
       } catch (err) {
-        console.error('重命名失败:', err);
-        showToast('重命名失败');
+        console.error('Rename failed:', err);
+        showToast('Rename failed');
         titleEl.textContent = currentTitle;
         input.replaceWith(titleEl);
       }
     } else {
-      // 没有变化，恢复原样
+      // No change, restore original
       input.replaceWith(titleEl);
     }
   };
 
-  // 回车保存，ESC 取消
+  // Enter to save, ESC to cancel
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
@@ -445,13 +445,13 @@ async function editGroupName(groupId, titleEl) {
     }
   });
 
-  // 失去焦点保存
+  // Save on blur
   input.addEventListener('blur', save);
 }
 
 /**
  * deleteGroup(groupId)
- * 删除标签组，同时关闭组内所有标签页
+ * * Delete a tab group and close all its tabs
  */
 async function deleteGroup(groupId) {
   const groupTabs = allTabs.filter(t => t.groupId === groupId);
@@ -461,22 +461,22 @@ async function deleteGroup(groupId) {
 
   try {
     playCloseSound();
-    // 关闭所有标签页并删除分组
+    // Close all tabs and remove group
     await chrome.tabs.remove(tabIds);
     await chrome.tabGroups.remove(groupId);
-    showToast('分组和标签页已删除');
+    showToast('Group and tabs deleted');
     await refreshAll();
   } catch (err) {
-    console.error('删除分组失败:', err);
-    showToast('删除失败');
+    console.error('Failed to delete group:', err);
+    showToast('Delete failed');
   }
 }
 
 // ================================================================
-// 域名分组区域渲染（下方）- 原有功能
+// Domain grouping rendering (bottom) — original feature
 // ================================================================
 
-// 主页 URL 模式
+// Landing page URL patterns
 const LANDING_PAGE_PATTERNS = [
   { hostname: 'mail.google.com', test: (p, h) => !h.includes('#inbox/') && !h.includes('#sent/') },
   { hostname: 'x.com', pathExact: ['/home'] },
@@ -523,7 +523,7 @@ function organizeByDomain(tabs) {
       }
       groupMap[hostname].tabs.push(tab);
     } catch {
-      // 跳过无效 URL
+      // Skip invalid URLs
     }
   }
 
@@ -531,7 +531,7 @@ function organizeByDomain(tabs) {
     groupMap['__landing-pages__'] = { domain: '__landing-pages__', tabs: landingTabs };
   }
 
-  // 排序：主页优先，然后按标签数量
+  // Sort: landing pages first, then by tab count
   return Object.values(groupMap).sort((a, b) => {
     const aIsLanding = a.domain === '__landing-pages__';
     const bIsLanding = b.domain === '__landing-pages__';
@@ -578,7 +578,7 @@ function stripTitleSuffix(title) {
 
 /**
  * getCustomTitle(title, url)
- * 针对特定域名提取更有意义的标题
+ * * Extract meaningful titles for specific domains
  */
 function getCustomTitle(title, url) {
   if (!url) return title;
@@ -586,35 +586,35 @@ function getCustomTitle(title, url) {
   try {
     const parsed = new URL(url);
 
-    // 成都大学 ehall 系统
+    // CDU ehall system
     if (parsed.hostname === 'ehall.cdu.edu.cn') {
       const hash = parsed.hash || '';
       const actMatch = hash.match(/act=([^&]+)/);
 
       if (actMatch) {
-        const act = actMatch[1]; // 例如: fp/svsmng/processMng 或 fp/printing
+        const act = actMatch[1]; // e.g. fp/svsmng/processMng or fp/printing
 
-        // 特殊名称映射表（覆盖自动提取）
+        // Special name mapping (overrides auto-extraction)
         const SPECIAL_NAMES = {
           'fp/formHome': '首页',
           'fp/svsmng': '服务配置管理',
           'fp/printing': '打印模板管理',
         };
 
-        // 尝试从映射表获取友好名称
+        // Try to get friendly name from mapping
         let actName = SPECIAL_NAMES[act];
 
-        // 如果没有映射，自动提取最后一部分并格式化
+        // Fall back to extracting last path segment
         if (!actName) {
-          // 提取最后一段路径，例如 fp/svsmng/processMng -> processMng
+          // Extract last path segment, e.g. fp/svsmng/processMng -> processMng
           const parts = act.split('/');
           const lastPart = parts[parts.length - 1];
 
-          // 格式化驼峰命名: processMng -> 流程管理, formDesign -> 表单设计
+          // Format camelCase to Chinese
           actName = formatCamelCase(lastPart);
         }
 
-        // 提取 ID 如果有
+        // Extract ID if present
         const idMatch = hash.match(/(?:formId|selectedID|id)=([a-z0-9\-]+)/i);
         if (idMatch) {
           const shortId = idMatch[1].substring(0, 8);
@@ -627,7 +627,7 @@ function getCustomTitle(title, url) {
       return '智慧教育';
     }
   } catch {
-    // 解析失败返回原标题
+    // Return original title on parse failure
   }
 
   return title;
@@ -635,13 +635,13 @@ function getCustomTitle(title, url) {
 
 /**
  * formatCamelCase(str)
- * 将驼峰命名转换为中文友好格式
- * 例如: processMng -> 流程管理, formDesign -> 表单设计
+ * * Convert camelCase to Chinese-friendly format
+ * * e.g. processMng -> 流程管理, formDesign -> 表单设计
  */
 function formatCamelCase(str) {
   if (!str) return '';
 
-  // 常见词汇映射
+  // Common vocabulary mapping
   const VOCAB = {
     'form': '表单',
     'process': '流程',
@@ -665,7 +665,7 @@ function formatCamelCase(str) {
     'svs': '服务',
   };
 
-  // 尝试直接匹配整个单词（不区分大小写）
+  // Try direct word match (case-insensitive)
   const lowerStr = str.toLowerCase();
   for (const [en, cn] of Object.entries(VOCAB)) {
     if (lowerStr === en.toLowerCase()) {
@@ -673,8 +673,8 @@ function formatCamelCase(str) {
     }
   }
 
-  // 尝试分解驼峰命名
-  // 例如: processMng -> ['process', 'Mng'] -> 流程管理
+  // Try splitting camelCase
+  // e.g. processMng -> ['process', 'Mng'] -> 流程管理
   const words = str.split(/(?=[A-Z])/);
   const translated = words.map(word => {
     const lower = word.toLowerCase();
@@ -700,14 +700,14 @@ function renderDomains() {
   }
 
   section.style.display = 'block';
-  countEl.innerHTML = `${domainGroups.length} 个域名`;
+  countEl.innerHTML = `${domainGroups.length} domains`;
 
   for (const group of domainGroups) {
     const card = createDomainCard(group);
     container.appendChild(card);
   }
 
-  // 给所有域名分组的标签页芯片添加拖拽事件
+  // Add drag events to all domain group tab chips
   const chips = container.querySelectorAll('.page-chip[draggable="true"]');
   chips.forEach(chip => {
     chip.addEventListener('dragstart', handleDomainDragStart);
@@ -720,7 +720,7 @@ function createDomainCard(group) {
   const tabCount = tabs.length;
   const isLanding = group.domain === '__landing-pages__';
 
-  // 统计重复
+  // Count duplicates
   const urlCounts = {};
   for (const tab of tabs) urlCounts[tab.url] = (urlCounts[tab.url] || 0) + 1;
   const dupeUrls = Object.entries(urlCounts).filter(([, c]) => c > 1);
@@ -730,7 +730,7 @@ function createDomainCard(group) {
   const card = document.createElement('div');
   card.className = `mission-card domain-card ${hasDupes ? 'has-amber-bar' : 'has-neutral-bar'}`;
 
-  // 徽章
+  // Badges
   let badgesHtml = `<span class="open-tabs-badge">
     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width:10px;height:10px">
       <path stroke-linecap="round" stroke-linejoin="round" d="M3 8.25V18a2.25 2.25 0 0 0 2.25 2.25h13.5A2.25 2.25 0 0 0 21 18V8.25m-18 0V6a2.25 2.25 0 0 1 2.25-2.25h13.5A2.25 2.25 0 0 1 21 6v2.25m-18 0h18" />
@@ -742,7 +742,7 @@ function createDomainCard(group) {
     badgesHtml += `<span class="open-tabs-badge" style="color:var(--accent-amber);background:rgba(200,113,58,0.08);">${totalExtras} duplicates</span>`;
   }
 
-  // 标签芯片
+  // Tab chips
   const seen = new Set();
   const uniqueTabs = tabs.filter(t => {
     if (seen.has(t.url)) return false;
@@ -754,7 +754,7 @@ function createDomainCard(group) {
   const extraCount = uniqueTabs.length - visibleTabs.length;
 
   let chipsHtml = visibleTabs.map(tab => {
-    // 使用自定义标题处理
+    // Use custom title
     const rawTitle = stripTitleSuffix(tab.title || tab.url);
     const label = getCustomTitle(rawTitle, tab.url);
     const count = urlCounts[tab.url];
@@ -765,7 +765,7 @@ function createDomainCard(group) {
     try { domain = new URL(tab.url).hostname; } catch {}
     const faviconUrl = domain ? `https://www.google.com/s2/favicons?domain=${domain}&sz=16` : '';
 
-    // 给每个标签页芯片添加 draggable 属性和 tab ID
+    // Add draggable and tab ID to chips
     return `<div class="page-chip clickable ${chipClass}"
       draggable="true"
       data-tab-id="${tab.id}"
@@ -785,7 +785,7 @@ function createDomainCard(group) {
     chipsHtml += `<div class="page-chip page-chip-overflow" data-action="expand-chips">+${extraCount} more</div>`;
   }
 
-  // 操作按钮
+  // Action buttons
   let actionsHtml = `<button class="action-btn close-tabs" data-action="close-domain-tabs" data-domain="${group.domain}">Close all ${tabCount} tabs</button>`;
 
   if (hasDupes) {
@@ -808,7 +808,7 @@ function createDomainCard(group) {
 }
 
 // ================================================================
-// 关闭动效（音效 + 彩纸）
+// Close animation (sound + confetti)
 // ================================================================
 
 function playCloseSound() {
@@ -899,12 +899,12 @@ function shootConfetti(x, y) {
 
 async function closeTab(tabId, element) {
   try {
-    // 动画
+    // Animation
     element.style.transition = 'opacity 0.2s, transform 0.2s';
     element.style.opacity = '0';
     element.style.transform = 'scale(0.9)';
 
-    // 彩纸效果
+    // Confetti effect
     const rect = element.getBoundingClientRect();
     shootConfetti(rect.left + rect.width / 2, rect.top + rect.height / 2);
     playCloseSound();
@@ -913,12 +913,12 @@ async function closeTab(tabId, element) {
     await chrome.tabs.remove(tabId);
     await refreshAll();
   } catch (err) {
-    console.error('关闭失败:', err);
+    console.error('Close failed:', err);
   }
 }
 
 // ================================================================
-// 事件处理
+// Event handling
 // ================================================================
 
 document.addEventListener('click', async (e) => {
@@ -927,7 +927,7 @@ document.addEventListener('click', async (e) => {
 
   const action = actionEl.dataset.action;
 
-  // 关闭重复 TreeTab 页面
+  // Close duplicate TreeTab tabs
   if (action === 'close-tabout-dupes') {
     const extensionId = chrome.runtime.id;
     const newtabUrl = `chrome-extension://${extensionId}/index.html`;
@@ -947,12 +947,12 @@ document.addEventListener('click', async (e) => {
       playCloseSound();
       const banner = document.getElementById('tabOutDupeBanner');
       if (banner) banner.style.display = 'none';
-      showToast('已关闭额外的 TreeTab 页面');
+      showToast('Closed extra TreeTab tabs');
     }
     return;
   }
 
-  // 切换标签页
+  // Switch to tab
   if (action === 'focus-tab') {
     const url = actionEl.dataset.tabUrl;
     const tab = allTabs.find(t => t.url === url);
@@ -960,7 +960,7 @@ document.addEventListener('click', async (e) => {
     return;
   }
 
-  // 关闭单个标签
+  // Close single tab
   if (action === 'close-single-tab') {
     e.stopPropagation();
     const url = actionEl.dataset.tabUrl;
@@ -972,7 +972,7 @@ document.addEventListener('click', async (e) => {
     return;
   }
 
-  // 编辑标签组名称
+  // Edit group name
   if (action === 'edit-group-name') {
     e.stopPropagation();
     const groupId = parseInt(actionEl.dataset.groupId, 10);
@@ -983,21 +983,21 @@ document.addEventListener('click', async (e) => {
     return;
   }
 
-  // 删除标签组（分组和标签页都删除）
+  // Delete group (both group and tabs)
   if (action === 'delete-group') {
     e.stopPropagation();
     const groupId = parseInt(actionEl.dataset.groupId, 10);
     if (groupId) {
       const group = allGroups.find(g => g.id === groupId);
       const groupTabs = allTabs.filter(t => t.groupId === groupId);
-      if (confirm(`确定要删除"${group?.title || '该分组'}"吗？\n\n组内 ${groupTabs.length} 个标签页将被关闭，分组也会被删除。`)) {
+      if (confirm(`Delete group "${group?.title || 'Untitled'}"?\n\n${groupTabs.length} tabs will be closed and the group will be removed.`)) {
         await deleteGroup(groupId);
       }
     }
     return;
   }
 
-  // 关闭整个域名组
+  // Close entire domain group
   if (action === 'close-domain-tabs') {
     const domain = actionEl.dataset.domain;
     const group = domainGroups.find(g => g.domain === domain);
@@ -1034,12 +1034,12 @@ document.addEventListener('click', async (e) => {
 
       await chrome.tabs.remove(toClose);
       await refreshAll();
-      showToast(`已关闭 ${toClose.length} 个标签页`);
+      showToast(`Closed ${toClose.length} tabs`);
     }
     return;
   }
 
-  // 去重
+  // Deduplication
   if (action === 'dedup-keep-one') {
     const urlsEncoded = actionEl.dataset.dupeUrls || '';
     const urls = urlsEncoded.split(',').map(u => decodeURIComponent(u)).filter(Boolean);
@@ -1060,14 +1060,14 @@ document.addEventListener('click', async (e) => {
       playCloseSound();
       await chrome.tabs.remove(toClose);
       await refreshAll();
-      showToast('已关闭重复标签页');
+      showToast('Duplicates closed');
     }
     return;
   }
 });
 
 // ================================================================
-// 辅助函数
+// Helper functions
 // ================================================================
 
 function showToast(message) {
@@ -1082,8 +1082,8 @@ function showToast(message) {
 
 /**
  * updateTabCountBadge(count)
- * 根据标签数量更新页脚徽章颜色
- * 1-10: 绿色, 11-20: 琥珀色, 21+: 红色
+ * * Update footer badge color based on tab count
+ * * 1-10: green, 11-20: amber, 21+: red
  */
 function updateTabCountBadge(count) {
   const badge = document.getElementById('statBadge');
@@ -1102,15 +1102,15 @@ function updateTabCountBadge(count) {
 
 function getGreeting() {
   const hour = new Date().getHours();
-  if (hour < 6) return '夜深了';
-  if (hour < 12) return '早上好';
-  if (hour < 14) return '中午好';
-  if (hour < 18) return '下午好';
-  return '晚上好';
+  if (hour < 6) return 'Good night';
+  if (hour < 12) return 'Good morning';
+  if (hour < 14) return 'Good afternoon';
+  if (hour < 18) return 'Good afternoon';
+  return 'Good evening';
 }
 
 function getDateDisplay() {
-  return new Date().toLocaleDateString('zh-CN', {
+  return new Date().toLocaleDateString('en-US', {
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
   });
 }
@@ -1136,32 +1136,32 @@ async function checkTabOutDupes() {
 
 async function refreshAll() {
   await fetchData();
-  renderDomains();  // 先渲染域名分组
-  renderGroups();   // 后渲染标签组
+  renderDomains();  // Render domain groups first
+  renderGroups();   // Then render tab groups
   checkTabOutDupes();
 }
 
 // ================================================================
-// 主题管理
+// Theme management
 // ================================================================
 
 const THEME_KEY = 'treetab-theme';
 
 /**
  * initTheme()
- * 初始化主题，优先使用保存的偏好，其次检测系统主题，最后根据时间
+ * * Init theme: saved preference > system preference > time of day
  */
 async function initTheme() {
-  // 尝试从 storage 读取用户偏好
+  // Try reading saved preference from storage
   const { [THEME_KEY]: savedTheme } = await chrome.storage.local.get(THEME_KEY);
 
   if (savedTheme) {
-    // 用户有保存的偏好
+    // User has a saved preference
     applyTheme(savedTheme);
   } else {
-    // 检测系统偏好
+    // Detect system preference
     const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    // 或者根据时间（晚上6点到早上6点自动深色）
+    // Or fall back to time-based (dark from 6pm to 6am)
     const hour = new Date().getHours();
     const isNight = hour >= 18 || hour < 6;
 
@@ -1169,9 +1169,9 @@ async function initTheme() {
     applyTheme(theme);
   }
 
-  // 监听系统主题变化
+  // Listen for system theme changes
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
-    // 只有在用户没有手动设置时才自动切换
+    // Only auto-switch if user has not set manually
     chrome.storage.local.get(THEME_KEY).then(({ [THEME_KEY]: saved }) => {
       if (!saved) {
         applyTheme(e.matches ? 'dark' : 'light');
@@ -1179,7 +1179,7 @@ async function initTheme() {
     });
   });
 
-  // 绑定切换按钮
+  // Bind toggle button
   const toggleBtn = document.getElementById('themeToggle');
   if (toggleBtn) {
     toggleBtn.addEventListener('click', toggleTheme);
@@ -1188,7 +1188,7 @@ async function initTheme() {
 
 /**
  * applyTheme(theme)
- * 应用指定主题
+ * * Apply the given theme
  */
 function applyTheme(theme) {
   document.documentElement.setAttribute('data-theme', theme);
@@ -1197,7 +1197,7 @@ function applyTheme(theme) {
 
 /**
  * toggleTheme()
- * 切换主题并保存偏好
+ * * Toggle theme and save preference
  */
 async function toggleTheme() {
   const current = document.documentElement.getAttribute('data-theme') || 'light';
@@ -1209,7 +1209,7 @@ async function toggleTheme() {
 
 /**
  * updateThemeIcon(theme)
- * 更新主题切换按钮图标
+ * * Update the theme toggle icon
  */
 function updateThemeIcon(theme) {
   const sunIcon = document.querySelector('.icon-sun');
@@ -1225,7 +1225,7 @@ function updateThemeIcon(theme) {
 }
 
 // ================================================================
-// 初始化
+// Initialization
 // ================================================================
 
 async function init() {
