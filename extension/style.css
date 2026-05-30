@@ -39,30 +39,30 @@
   --group-cyan: #007b83;
 }
 
-/* Dark mode — "Deep Forest" green theme */
+/* Dark mode */
 [data-theme="dark"] {
-  --ink: #dce8e0;
-  --paper: #0e1612;
-  --warm-gray: #19291f;
-  --muted: #6e8e76;
-  --accent-amber: #d49450;
-  --accent-sage: #6db890;      /* Primary accent — sage green */
-  --accent-slate: #759a82;
-  --accent-rose: #c07272;
-  --status-active: #6db886;
-  --status-cooling: #b8a85e;
-  --status-abandoned: #c07272;
-  --card-bg: #132018;
-  --card-border: #1e3026;
-  --shadow: rgba(0, 0, 0, 0.5);
+  --ink: #e8f0e8;
+  --paper: #1a1f1a;
+  --warm-gray: #2a3a2a;
+  --muted: #8aaa8a;
+  --accent-amber: #d48a5e;
+  --accent-sage: #5a9a8a;
+  --accent-slate: #7a9a8a;
+  --accent-rose: #c76a6a;
+  --status-active: #6aba8a;
+  --status-cooling: #c8b86e;
+  --status-abandoned: #c76a6a;
+  --card-bg: #242a24;
+  --card-border: #3a4a3a;
+  --shadow: rgba(0, 0, 0, 0.3);
 
-  --rgb-ink: 220, 232, 224;
-  --rgb-muted: 110, 142, 118;
-  --rgb-amber: 212, 148, 80;
-  --rgb-rose: 192, 114, 114;
-  --rgb-sage: 109, 184, 144;
-  --rgb-active: 109, 184, 134;
-  --rgb-cooling: 184, 168, 94;
+  --rgb-ink: 232, 240, 232;
+  --rgb-muted: 138, 170, 138;
+  --rgb-amber: 212, 138, 94;
+  --rgb-rose: 199, 106, 106;
+  --rgb-sage: 90, 154, 138;
+  --rgb-active: 106, 186, 138;
+  --rgb-cooling: 200, 184, 110;
 }
 
 * {
@@ -87,16 +87,6 @@ body::before {
   background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
   pointer-events: none;
   z-index: 0;
-}
-
-/* Dark mode — deeper atmospheric texture */
-[data-theme="dark"] body::before {
-  opacity: 0.6;
-  background-image:
-    radial-gradient(ellipse at 80% 20%, rgba(109, 184, 144, 0.04) 0%, transparent 50%),
-    radial-gradient(ellipse at 20% 60%, rgba(212, 148, 80, 0.03) 0%, transparent 50%),
-    radial-gradient(ellipse at 50% 90%, rgba(109, 184, 144, 0.03) 0%, transparent 40%),
-    url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
 }
 
 .container {
@@ -164,7 +154,16 @@ header {
   height: 20px;
 }
 
-/* Dark mode button style — refined in dark mode refinements section */
+/* Dark mode button style */
+[data-theme="dark"] .theme-toggle {
+  border-color: var(--card-border);
+  background: var(--card-bg);
+}
+
+[data-theme="dark"] .theme-toggle:hover {
+  border-color: var(--accent-sage);
+  color: var(--accent-sage);
+}
 .section {
   margin-bottom: 48px;
 }
@@ -272,18 +271,6 @@ header {
   transform: translateY(-1px);
 }
 
-[data-theme="dark"] .group-card {
-  border-color: rgba(255, 255, 255, 0.1);
-  background: linear-gradient(180deg, #18281e 0%, #132018 100%);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.03);
-}
-
-[data-theme="dark"] .group-card:hover {
-  border-color: rgba(109, 184, 144, 0.35);
-  background: linear-gradient(180deg, #1b2e22 0%, #152219 100%);
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(109, 184, 144, 0.15), 0 0 20px rgba(109, 184, 144, 0.08);
-}
-
 .group-card.drag-over {
   border-color: var(--accent-sage);
   box-shadow: 0 0 0 2px rgba(var(--rgb-sage), 0.3);
@@ -313,12 +300,6 @@ header {
 .group-color-pink { background: var(--group-pink); }
 .group-color-purple { background: var(--group-purple); }
 .group-color-cyan { background: var(--group-cyan); }
-
-/* Ungrouped tabs indicator */
-.group-color-ungrouped {
-  background: var(--muted);
-  opacity: 0.5;
-}
 
 .group-title {
   font-size: 14px;
@@ -436,17 +417,6 @@ header {
 .group-tab-item:hover {
   border-color: var(--accent-sage);
   box-shadow: 0 2px 6px var(--shadow);
-}
-
-[data-theme="dark"] .group-tab-item {
-  border-color: rgba(255, 255, 255, 0.07);
-  background: rgba(0, 0, 0, 0.15);
-}
-
-[data-theme="dark"] .group-tab-item:hover {
-  border-color: rgba(109, 184, 144, 0.35);
-  background: rgba(109, 184, 144, 0.08);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 
 .group-tab-item:active { cursor: grabbing; }
@@ -585,18 +555,6 @@ header {
 .mission-card:hover {
   box-shadow: 0 4px 20px var(--shadow);
   transform: translateY(-1px);
-}
-
-[data-theme="dark"] .mission-card {
-  border-color: rgba(255, 255, 255, 0.1);
-  background: linear-gradient(180deg, #18281e 0%, #132018 100%);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.03);
-}
-
-[data-theme="dark"] .mission-card:hover {
-  border-color: rgba(109, 184, 144, 0.35);
-  background: linear-gradient(180deg, #1b2e22 0%, #152219 100%);
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(109, 184, 144, 0.15), 0 0 20px rgba(109, 184, 144, 0.08);
 }
 
 .mission-card.closing {
@@ -879,136 +837,6 @@ footer {
 }
 
 .toast svg { width: 16px; height: 16px; color: var(--accent-sage); }
-
-/* ================================================================
-   DARK MODE REFINEMENTS
-   ================================================================ */
-
-[data-theme="dark"] header {
-  border-bottom-color: rgba(255, 255, 255, 0.08);
-}
-
-[data-theme="dark"] footer {
-  border-top-color: rgba(255, 255, 255, 0.08);
-}
-
-[data-theme="dark"] .section-line {
-  background: rgba(255, 255, 255, 0.08);
-}
-
-[data-theme="dark"] .theme-toggle {
-  border-color: rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--muted);
-}
-
-[data-theme="dark"] .theme-toggle:hover {
-  border-color: var(--accent-amber);
-  color: var(--accent-amber);
-  box-shadow: 0 0 16px rgba(212, 148, 80, 0.2);
-}
-
-[data-theme="dark"] .header-left h1 {
-  text-shadow: 0 0 40px rgba(109, 184, 144, 0.08);
-}
-
-[data-theme="dark"] .stat-num {
-  text-shadow: 0 0 30px rgba(109, 184, 144, 0.1);
-}
-
-[data-theme="dark"] .tab-cleanup-banner {
-  background: linear-gradient(135deg, rgba(109, 184, 144, 0.06), rgba(109, 184, 144, 0.12));
-  border-color: rgba(109, 184, 144, 0.2);
-}
-
-[data-theme="dark"] .new-group-dropzone {
-  background: linear-gradient(135deg, rgba(109, 184, 144, 0.04), rgba(109, 184, 144, 0.08));
-  border-color: rgba(109, 184, 144, 0.2);
-}
-
-[data-theme="dark"] .new-group-dropzone.drag-over {
-  background: linear-gradient(135deg, rgba(109, 184, 144, 0.1), rgba(109, 184, 144, 0.16));
-  border-color: var(--accent-sage);
-}
-
-[data-theme="dark"] .empty-checkmark {
-  background: rgba(109, 184, 144, 0.08);
-  border-color: rgba(109, 184, 144, 0.2);
-  box-shadow: 0 0 0 8px rgba(109, 184, 144, 0.04), 0 0 0 16px rgba(109, 184, 144, 0.02);
-}
-
-[data-theme="dark"] .toast {
-  background: #18281e;
-  color: var(--ink);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(109, 184, 144, 0.1);
-}
-
-[data-theme="dark"] .action-btn {
-  border-color: rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.04);
-}
-
-[data-theme="dark"] .action-btn:hover {
-  border-color: rgba(255, 255, 255, 0.25);
-  background: rgba(255, 255, 255, 0.08);
-}
-
-[data-theme="dark"] .action-btn.primary {
-  background: var(--accent-sage);
-  color: #0e1612;
-  border-color: var(--accent-sage);
-  font-weight: 600;
-}
-
-[data-theme="dark"] .action-btn.primary:hover {
-  opacity: 0.9;
-  box-shadow: 0 0 20px rgba(109, 184, 144, 0.3);
-}
-
-[data-theme="dark"] .action-btn.close-tabs {
-  border-color: rgba(212, 148, 80, 0.2);
-  background: rgba(212, 148, 80, 0.06);
-}
-
-[data-theme="dark"] .action-btn.close-tabs:hover {
-  border-color: var(--accent-amber);
-  background: rgba(212, 148, 80, 0.12);
-  box-shadow: 0 0 16px rgba(212, 148, 80, 0.15);
-}
-
-[data-theme="dark"] .page-chip {
-  border-bottom-color: rgba(255, 255, 255, 0.07);
-  color: var(--ink);
-}
-
-[data-theme="dark"] .page-chip.clickable:hover {
-  background: rgba(109, 184, 144, 0.05);
-}
-
-[data-theme="dark"] .mission-card::before {
-  opacity: 0.6;
-}
-
-[data-theme="dark"] .group-header {
-  border-bottom-color: rgba(255, 255, 255, 0.08);
-}
-
-[data-theme="dark"] .chip-close:hover {
-  background: rgba(192, 114, 114, 0.1);
-}
-
-[data-theme="dark"] .group-close-btn:hover {
-  background: rgba(192, 114, 114, 0.1);
-}
-
-[data-theme="dark"] .open-tabs-badge {
-  background: rgba(212, 148, 80, 0.1);
-}
-
-[data-theme="dark"] .tab-cleanup-icon {
-  background: rgba(212, 148, 80, 0.12);
-}
 
 /* ================================================================
    ANIMATIONS
