@@ -1148,6 +1148,46 @@ async function refreshAll() {
 const THEME_KEY = 'treetab-theme';
 
 /**
+ * detectDefaultTheme()
+ * * Fallback theme when no preference is saved: system > time of day.
+ */
+function detectDefaultTheme() {
+  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const hour = new Date().getHours();
+  const isNight = hour >= 18 || hour < 6;
+
+  return prefersDark || isNight ? 'dark' : 'light';
+}
+
+/**
+ * extensionApiAvailable()
+ * * True when the page runs inside the extension with storage exposed.
+ *   A freshly reloaded/unloaded extension can leave a stale new-tab
+ *   context stripped of every chrome.* API.
+ */
+function extensionApiAvailable() {
+  return typeof chrome !== 'undefined' && !!(chrome.storage && chrome.storage.local);
+}
+
+/**
+ * recoverExtensionContextOnce()
+ * * On a stale context, reload the page exactly once to re-enter the
+ *   extension; sessionStorage guards against a reload loop.
+ *   Returns true when a reload was triggered.
+ */
+function recoverExtensionContextOnce() {
+  const RETRY_KEY = 'treetab-context-retry';
+
+  if (!sessionStorage.getItem(RETRY_KEY)) {
+    sessionStorage.setItem(RETRY_KEY, '1');
+    location.reload();
+    return true;
+  }
+  sessionStorage.removeItem(RETRY_KEY);
+  return false;
+}
+
+/**
  * initTheme()
  * * Init theme: saved preference > system preference > time of day
  */
@@ -1159,14 +1199,7 @@ async function initTheme() {
     // User has a saved preference
     applyTheme(savedTheme);
   } else {
-    // Detect system preference
-    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    // Or fall back to time-based (dark from 6pm to 6am)
-    const hour = new Date().getHours();
-    const isNight = hour >= 18 || hour < 6;
-
-    const theme = prefersDark || isNight ? 'dark' : 'light';
-    applyTheme(theme);
+    applyTheme(detectDefaultTheme());
   }
 
   // Listen for system theme changes
@@ -1225,6 +1258,199 @@ function updateThemeIcon(theme) {
 }
 
 // ================================================================
+// Custom background management
+// ================================================================
+
+const BG_IMAGE_KEY = 'treetab-bg-image';
+/** Legacy key from the opacity-slider design, kept only for cleanup */
+const BG_OPACITY_KEY_LEGACY = 'treetab-bg-opacity';
+
+/** Longest edge (px) an uploaded image is downscaled to before storage */
+const BG_MAX_EDGE = 1600;
+/** Encoder quality for the downscaled image */
+const BG_IMAGE_QUALITY = 0.85;
+
+/**
+ * initBackground()
+ * * Load the saved image, render the layer, wire up controls.
+ */
+async function initBackground() {
+  const { [BG_IMAGE_KEY]: savedImage } = await chrome.storage.local.get(BG_IMAGE_KEY);
+
+  applyBackgroundLayer(savedImage);
+  wireBgResetButton();
+  wireBgUploadButton();
+  wireBgPopover();
+  watchBgStorageChanges();
+
+  // One-time cleanup of the obsolete opacity-slider setting
+  chrome.storage.local.remove(BG_OPACITY_KEY_LEGACY);
+}
+
+/**
+ * applyBackgroundLayer(imageDataUrl)
+ * * Render (or clear) the full-bleed background layer.
+ */
+function applyBackgroundLayer(imageDataUrl) {
+  const layer = document.getElementById('bgLayer');
+  const removeBtn = document.getElementById('bgRemoveBtn');
+
+  if (imageDataUrl && imageDataUrl.startsWith('data:image/')) {
+    layer.style.backgroundImage = `url("${imageDataUrl}")`;
+    document.body.classList.add('has-bg-image');
+    removeBtn.hidden = false;
+  } else {
+    document.body.classList.remove('has-bg-image');
+    removeBtn.hidden = true;
+  }
+}
+
+/**
+ * wireBgUploadButton()
+ * * Open the file picker; downscale + persist the chosen image.
+ */
+function wireBgUploadButton() {
+  const uploadBtn = document.getElementById('bgUploadBtn');
+  const fileInput = document.getElementById('bgFileInput');
+
+  uploadBtn.addEventListener('click', () => fileInput.click());
+
+  fileInput.addEventListener('change', async () => {
+    const file = fileInput.files[0];
+
+    if (file && !file.type.startsWith('image/')) {
+      showToast('Please choose an image file');
+      fileInput.value = '';
+      return;
+    }
+
+    if (!file) return;
+
+    try {
+      const dataUrl = await downscaleImage(file);
+      await chrome.storage.local.set({ [BG_IMAGE_KEY]: dataUrl });
+      applyBackgroundLayer(dataUrl);
+      closeBgPopover();
+      showToast('Background image saved');
+    } catch (err) {
+      showToast('Could not save this image (too large?)');
+    } finally {
+      fileInput.value = '';
+    }
+  });
+}
+
+/**
+ * downscaleImage(file)
+ * * Downscale to BG_MAX_EDGE and re-encode as WebP so the data URL fits
+ *   in chrome.storage.local's quota (default 10 MB).
+ */
+async function downscaleImage(file) {
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const img = await loadImageIntoElement(objectUrl);
+    const scale = Math.min(1, BG_MAX_EDGE / Math.max(img.naturalWidth, img.naturalHeight));
+    const width = Math.max(1, Math.round(img.naturalWidth * scale));
+    const height = Math.max(1, Math.round(img.naturalHeight * scale));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+
+    return canvas.toDataURL('image/webp', BG_IMAGE_QUALITY);
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+function loadImageIntoElement(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Image decode failed'));
+    img.src = src;
+  });
+}
+
+/**
+ * wireBgResetButton()
+ * * Remove the stored image after the layer fade-out completes.
+ */
+function wireBgResetButton() {
+  const removeBtn = document.getElementById('bgRemoveBtn');
+
+  removeBtn.addEventListener('click', async () => {
+    const layer = document.getElementById('bgLayer');
+
+    document.body.classList.remove('has-bg-image');
+    removeBtn.hidden = true;
+    await chrome.storage.local.remove(BG_IMAGE_KEY);
+
+    setTimeout(() => {
+      if (document.body.classList.contains('has-bg-image')) return;
+      layer.style.backgroundImage = '';
+    }, 400);
+
+    closeBgPopover();
+    showToast('Background image removed');
+  });
+}
+
+/**
+ * closeBgPopover()
+ * * Hide the background settings panel and reset its button state.
+ */
+function closeBgPopover() {
+  const btn = document.getElementById('bgToggleBtn');
+  const popover = document.getElementById('bgPopover');
+  if (!btn || !popover) return;
+
+  popover.hidden = true;
+  btn.classList.remove('active');
+  btn.setAttribute('aria-expanded', 'false');
+}
+
+/**
+ * wireBgPopover()
+ * * Open/close the settings popover; dismiss on outside click or Escape.
+ */
+function wireBgPopover() {
+  const btn = document.getElementById('bgToggleBtn');
+  const popover = document.getElementById('bgPopover');
+
+  btn.addEventListener('click', () => {
+    const willOpen = popover.hidden;
+    popover.hidden = !willOpen;
+    btn.classList.toggle('active', willOpen);
+    btn.setAttribute('aria-expanded', String(willOpen));
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!popover.hidden && !popover.contains(e.target) && !btn.contains(e.target)) {
+      closeBgPopover();
+    }
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeBgPopover();
+  });
+}
+
+/**
+ * watchBgStorageChanges()
+ * * Keep the layer in sync when another tab page saves/removes a background.
+ */
+function watchBgStorageChanges() {
+  chrome.storage.onChanged.addListener(async (changes, area) => {
+    if (area !== 'local' || !changes[BG_IMAGE_KEY]) return;
+
+    const { [BG_IMAGE_KEY]: image } = await chrome.storage.local.get(BG_IMAGE_KEY);
+    applyBackgroundLayer(image);
+  });
+}
+
+// ================================================================
 // Initialization
 // ================================================================
 
@@ -1232,7 +1458,16 @@ async function init() {
   document.getElementById('greeting').textContent = getGreeting();
   document.getElementById('dateDisplay').textContent = getDateDisplay();
 
+  if (!extensionApiAvailable()) {
+    // Stale context without chrome APIs: re-enter the extension once,
+    // then degrade gracefully without touching any chrome.* API.
+    if (recoverExtensionContextOnce()) return;
+    applyTheme(detectDefaultTheme());
+    return;
+  }
+
   await initTheme();
+  await initBackground();
   await refreshAll();
   setupNewGroupDropzone();
 }

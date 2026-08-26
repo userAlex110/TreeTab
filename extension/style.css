@@ -89,6 +89,36 @@ body::before {
   z-index: 0;
 }
 
+/* ---- Custom background image layer ----
+   Image-first mode: full-bleed cover, no color cast.
+   The paper color stays as the clean fallback when no image is set. */
+#bgLayer {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+
+body.has-bg-image #bgLayer {
+  opacity: 1;
+}
+
+/* Text halo so headers/sections stay readable over any photo */
+:root {
+  --halo: rgba(255, 255, 255, 0.55);
+  --halo-soft: rgba(255, 255, 255, 0.35);
+}
+
+[data-theme="dark"] {
+  --halo: rgba(10, 16, 10, 0.55);
+  --halo-soft: rgba(10, 16, 10, 0.35);
+}
+
 .container {
   position: relative;
   z-index: 1;
@@ -164,6 +194,133 @@ header {
   border-color: var(--accent-sage);
   color: var(--accent-sage);
 }
+
+/* ---- Background image control ---- */
+.bg-control {
+  position: relative;
+  margin-right: 8px;
+}
+
+.bg-toggle.active {
+  border-color: var(--accent-sage);
+  color: var(--accent-sage);
+}
+
+/* Dropdown anchored right under the image button; fully opaque so it
+   always reads as the top-most layer, never mixing with page content. */
+.bg-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 224px;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35), 0 2px 8px rgba(0, 0, 0, 0.18);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  z-index: 9999;
+  animation: fadeUp 0.2s ease both;
+}
+
+.bg-popover[hidden] { display: none; }
+
+.bg-upload-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-family: 'DM Sans', sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  padding: 9px 12px;
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  background: rgba(var(--rgb-sage), 0.08);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.bg-upload-btn svg { width: 14px; height: 14px; }
+.bg-upload-btn:hover {
+  background: rgba(var(--rgb-sage), 0.16);
+  border-color: var(--accent-sage);
+  color: var(--accent-sage);
+}
+
+.bg-remove-btn {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--status-abandoned);
+  background: rgba(var(--rgb-rose), 0.1);
+  border: 1px solid rgba(var(--rgb-rose), 0.35);
+  border-radius: 6px;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.bg-remove-btn:hover { background: rgba(var(--rgb-rose), 0.2); }
+.bg-remove-btn[hidden] { display: none; }
+
+/* ================================================================
+   IMAGE-FIRST OVERRIDES — active only while a photo is set.
+   Plain translucent fills (no blur): the photo stays crisp everywhere.
+   Theme colors unchanged.
+   ================================================================ */
+
+body.has-bg-image .group-card,
+body.has-bg-image .mission-card {
+  background: color-mix(in srgb, var(--card-bg) 82%, transparent);
+  border-color: color-mix(in srgb, var(--card-border) 70%, transparent);
+}
+
+body.has-bg-image .group-tab-item {
+  background: color-mix(in srgb, var(--card-bg) 55%, transparent);
+  border-color: color-mix(in srgb, var(--card-border) 60%, transparent);
+}
+
+body.has-bg-image .group-header {
+  border-bottom-color: rgba(var(--rgb-muted), 0.18);
+}
+
+body.has-bg-image .page-chip {
+  border-bottom-color: rgba(var(--rgb-muted), 0.14);
+}
+
+body.has-bg-image .page-chip.clickable:hover {
+  background: rgba(var(--rgb-amber), 0.07);
+}
+
+body.has-bg-image .new-group-dropzone {
+  background: linear-gradient(135deg, rgba(var(--rgb-sage), 0.08), rgba(var(--rgb-sage), 0.14));
+  border-color: rgba(var(--rgb-sage), 0.4);
+}
+
+body.has-bg-image .tab-cleanup-banner {
+  background: rgba(var(--rgb-sage), 0.07);
+  border-color: rgba(var(--rgb-sage), 0.25);
+}
+
+/* Text halo so free-floating copy stays legible over any photo */
+body.has-bg-image .header-left h1,
+body.has-bg-image .header-left .date,
+body.has-bg-image .section-header h2,
+body.has-bg-image .section-count,
+body.has-bg-image .new-group-content,
+body.has-bg-image .empty-title,
+body.has-bg-image .empty-subtitle,
+body.has-bg-image .stat-num,
+body.has-bg-image .stat-label,
+body.has-bg-image .last-refresh,
+body.has-bg-image .last-refresh a {
+  text-shadow: 0 1px 3px var(--halo), 0 0 14px var(--halo-soft);
+}
+
 .section {
   margin-bottom: 48px;
 }
@@ -200,21 +357,21 @@ header {
 
 /* ---- TreeTab duplicate banner ---- */
 .tab-cleanup-banner {
-  background: linear-gradient(135deg, rgba(var(--rgb-sage),0.08), rgba(var(--rgb-sage),0.15));
-  border: 1px solid rgba(var(--rgb-sage),0.25);
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
   border-radius: 8px;
-  padding: 16px 24px;
+  padding: 10px 16px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 32px;
+  margin-bottom: 28px;
 }
 
-.tab-cleanup-left { display: flex; align-items: center; gap: 16px; }
+.tab-cleanup-left { display: flex; align-items: center; gap: 12px; }
 
 .tab-cleanup-icon {
-  width: 36px;
-  height: 36px;
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
   background: rgba(var(--rgb-amber),0.1);
   display: flex;
@@ -223,15 +380,15 @@ header {
   flex-shrink: 0;
 }
 
-.tab-cleanup-icon svg { width: 18px; height: 18px; color: var(--accent-amber); }
-.tab-cleanup-text { font-size: 13px; color: var(--ink); line-height: 1.5; }
+.tab-cleanup-icon svg { width: 15px; height: 15px; color: var(--accent-amber); }
+.tab-cleanup-text { font-size: 12.5px; color: var(--ink); line-height: 1.5; }
 .tab-cleanup-text strong { font-weight: 600; }
 
 .tab-cleanup-btn {
   font-family: 'DM Sans', sans-serif;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
-  padding: 8px 20px;
+  padding: 6px 14px;
   border-radius: 6px;
   border: none;
   background: var(--accent-sage);
