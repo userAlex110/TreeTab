@@ -863,7 +863,7 @@ function shootConfetti(x, y) {
       background: ${color};
       border-radius: ${Math.random() > 0.5 ? '50%' : '2px'};
       pointer-events: none;
-      z-index: 9999;
+      z-index: 200; /* --z-confetti */
       transform: translate(-50%, -50%);
     `;
     document.body.appendChild(el);

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "TreeTab",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "TreeTab - 标签组看板，以看板形式管理你的浏览器标签页",
   "permissions": ["tabs", "activeTab", "storage", "tabGroups"],
   "chrome_url_overrides": { "newtab": "index.html" },

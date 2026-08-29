@@ -28,6 +28,15 @@
   --rgb-active: 90, 154, 122;
   --rgb-cooling: 184, 168, 94;
 
+  /* Stacking order: background layers (-1) < content (in flow) < popover
+     < toast < confetti. Background layers sit under normal flow content,
+     so .container must NOT create a stacking context — that would cap
+     .bg-popover's layer. */
+  --z-bg: -1;
+  --z-popover: 50;
+  --z-toast: 100;
+  --z-confetti: 200;
+
   /* Chrome tab group colors */
   --group-grey: #5f6368;
   --group-blue: #1a73e8;
@@ -86,16 +95,19 @@ body::before {
   inset: 0;
   background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
   pointer-events: none;
-  z-index: 0;
+  z-index: var(--z-bg);
 }
 
 /* ---- Custom background image layer ----
    Image-first mode: full-bleed cover, no color cast.
-   The paper color stays as the clean fallback when no image is set. */
+   The paper color stays as the clean fallback when no image is set.
+   Same z-index as body::before; covers the noise texture only because
+   it comes later in the DOM — keep #bgLayer as a direct body child
+   positioned after it. */
 #bgLayer {
   position: fixed;
   inset: 0;
-  z-index: 0;
+  z-index: var(--z-bg);
   pointer-events: none;
   background-size: cover;
   background-position: center;
@@ -120,8 +132,9 @@ body.has-bg-image #bgLayer {
 }
 
 .container {
+  /* No z-index: a stacking context here would cap .bg-popover's layer.
+     Background layers sit at z-index -1, below normal flow content. */
   position: relative;
-  z-index: 1;
   max-width: 960px;
   margin: 0 auto;
   padding: 48px 32px 80px;
@@ -206,8 +219,9 @@ header {
   color: var(--accent-sage);
 }
 
-/* Dropdown anchored right under the image button; fully opaque so it
-   always reads as the top-most layer, never mixing with page content. */
+/* Dropdown anchored right under the image button. The z-index is global
+   (no ancestor stacking context above it), so it sits above all page
+   content; the toast (--z-toast) may still briefly cover it. */
 .bg-popover {
   position: absolute;
   top: calc(100% + 8px);
@@ -221,7 +235,7 @@ header {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  z-index: 9999;
+  z-index: var(--z-popover);
   animation: fadeUp 0.2s ease both;
 }
 
@@ -286,6 +300,17 @@ body.has-bg-image .group-tab-item {
 
 body.has-bg-image .group-header {
   border-bottom-color: rgba(var(--rgb-muted), 0.18);
+}
+
+/* Page-level dividers: same translucent treatment, otherwise the full-opacity
+   theme line reads as if it sits on a layer above the photo. */
+body.has-bg-image .section-line {
+  background: rgba(var(--rgb-muted), 0.25);
+}
+
+body.has-bg-image header,
+body.has-bg-image footer {
+  border-color: rgba(var(--rgb-muted), 0.25);
 }
 
 body.has-bg-image .page-chip {
@@ -979,7 +1004,7 @@ footer {
   padding: 12px 24px;
   border-radius: 8px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
-  z-index: 100;
+  z-index: var(--z-toast);
   opacity: 0;
   transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
   pointer-events: none;
