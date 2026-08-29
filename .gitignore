@@ -11,8 +11,10 @@ Thumbs.db
 .zsh_history
 .bash_history
 
-# Claude
+# AI tools
 .claude/
+.zcode/
+.v2c/
 AGENTS.md
 CLAUDE.md
 
