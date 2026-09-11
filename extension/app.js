@@ -1,7 +1,7 @@
 /* ================================================================
    TreeTab — New Tab Dashboard
-   Top: Browser tab groups (masonry layout, drag to manage)
-   Bottom: Domain-grouped tabs (original feature)
+   Top: Domain-grouped tabs (kanban cards)
+   Bottom: Browser tab groups (masonry layout, drag to manage)
 
    Features:
    1. Display browser tab groups with drag-and-drop management
@@ -9,9 +9,92 @@
    3. Landing page detection
    4. Duplicate tab detection
    5. Close animation (sound + confetti)
+   6. Live board — Chrome tab/group events schedule a debounced refresh
    ================================================================ */
 
 'use strict';
+
+// ================================================================
+// Constants
+// ================================================================
+
+const GROUP_COLORS = ['grey', 'blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan'];
+
+/** Sentinel domain key of the aggregated homepages card */
+const LANDING_DOMAIN = '__landing-pages__';
+
+/** Domain cards show this many page chips before folding the rest into "+N more" */
+const CHIP_LIMIT = 8;
+
+/** Chrome fires bursts of tab events; coalesce them into a single render */
+const REFRESH_DEBOUNCE_MS = 300;
+
+/** How long a bulk-close button stays armed waiting for its second click */
+const CONFIRM_TIMEOUT_MS = 3000;
+
+/** Shown when a tab reports no favicon — keeps the page free of third-party requests */
+const FALLBACK_FAVICON = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6.25' fill='none' stroke='%237db9a8' stroke-width='1.5' opacity='0.55'/%3E%3Ccircle cx='8' cy='8' r='2.25' fill='%237db9a8' opacity='0.45'/%3E%3C/svg%3E";
+
+/** Card headings that prettifying would only make worse */
+const FRIENDLY_DOMAINS = {
+  'github.com': 'GitHub',
+  'www.github.com': 'GitHub',
+  'youtube.com': 'YouTube',
+  'www.youtube.com': 'YouTube',
+  'x.com': 'X',
+  'twitter.com': 'X',
+  'reddit.com': 'Reddit',
+  'www.reddit.com': 'Reddit',
+  'linkedin.com': 'LinkedIn',
+  'www.linkedin.com': 'LinkedIn',
+  'mail.google.com': 'Gmail',
+  'local-files': 'Local Files',
+};
+
+/** Homepage-ish URLs, pulled out of their domain card into a shared one */
+const LANDING_PAGE_PATTERNS = [
+  { hostname: 'mail.google.com', test: (p, h) => !h.includes('#inbox/') && !h.includes('#sent/') },
+  { hostname: 'x.com', pathExact: ['/home'] },
+  { hostname: 'www.linkedin.com', pathExact: ['/'] },
+  { hostname: 'github.com', pathExact: ['/'] },
+  { hostname: 'www.youtube.com', pathExact: ['/'] },
+  { hostname: 'ehall.cdu.edu.cn', test: (p, h) => h.includes('act=fp/formHome') },
+  { hostname: 'www.bilibili.com', pathExact: ['/'] },
+  { hostname: 'gitcode.com', pathExact: ['/'] },
+];
+
+/** ehall.cdu.edu.cn act= values worth naming by hand */
+const SPECIAL_NAMES = {
+  'fp/formHome': '首页',
+  'fp/svsmng': '服务配置管理',
+  'fp/printing': '打印模板管理',
+};
+
+/** English → Chinese vocabulary used to humanize camelCase act names */
+const VOCAB = {
+  'form': '表单',
+  'process': '流程',
+  'mng': '管理',
+  'design': '设计',
+  'home': '首页',
+  'business': '业务',
+  'report': '报表',
+  'printing': '打印',
+  'view': '查看',
+  'edit': '编辑',
+  'create': '创建',
+  'list': '列表',
+  'detail': '详情',
+  'search': '搜索',
+  'query': '查询',
+  'config': '配置',
+  'setting': '设置',
+  'user': '用户',
+  'admin': '管理',
+  'svs': '服务',
+};
+
+const ESCAPE_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 
 // ================================================================
 // Global state
@@ -22,7 +105,51 @@ let allGroups = [];
 let domainGroups = [];
 let draggedTabId = null;
 
-const GROUP_COLORS = ['grey', 'blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan'];
+/** Window this page lives in — lets us ignore focus events from other windows */
+let pageWindowId = null;
+
+/** Cards the user unfolded past CHIP_LIMIT, keyed by domain / 'ungrouped' */
+const expandedCards = new Set();
+
+/** Card scroll offsets, captured before a re-render and restored after */
+const cardScrollPositions = new Map();
+
+let refreshTimer = null;
+let refreshQueued = false;
+let toastTimer = null;
+let confirmTimer = null;
+let audioContext = null;
+
+// ================================================================
+// Small helpers
+// ================================================================
+
+/**
+ * escapeHtml(value)
+ * * Escape for interpolation into innerHTML. Tab and group titles are
+ *   page-controlled, so a title containing "<" or a quote must not be able
+ *   to break a card's markup.
+ */
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, ch => ESCAPE_MAP[ch]);
+}
+
+/**
+ * faviconFor(tab)
+ * * Icons come from the tab itself: no favicon service request, so the page
+ *   stays local and icons render offline.
+ */
+function faviconFor(tab) {
+  return tab.favIconUrl || FALLBACK_FAVICON;
+}
+
+/**
+ * visibleTabsOf(uniqueTabs, key)
+ * * Respect a card's expanded/collapsed state and report what was folded away.
+ */
+function visibleTabsOf(uniqueTabs, key) {
+  return expandedCards.has(key) ? uniqueTabs : uniqueTabs.slice(0, CHIP_LIMIT);
+}
 
 // ================================================================
 // Data fetching
@@ -31,6 +158,8 @@ const GROUP_COLORS = ['grey', 'blue', 'red', 'yellow', 'green', 'pink', 'purple'
 async function fetchData() {
   try {
     const currentWindow = await chrome.windows.getCurrent();
+    pageWindowId = currentWindow.id;
+
     const [tabs, groups] = await Promise.all([
       chrome.tabs.query({ currentWindow: true }),
       chrome.tabGroups.query({ windowId: currentWindow.id })
@@ -72,6 +201,7 @@ async function fetchData() {
 function renderGroups() {
   const container = document.getElementById('groupsContainer');
   const countEl = document.getElementById('groupsCount');
+  const section = document.getElementById('groupsSection');
 
   if (!container) return;
   container.innerHTML = '';
@@ -86,7 +216,14 @@ function renderGroups() {
   }
 
   const activeGroups = allGroups.filter(g => groupTabsMap[g.id]?.length > 0);
-  countEl.textContent = `${activeGroups.length} groups`;
+  if (countEl) countEl.textContent = `${activeGroups.length} groups`;
+
+  // With no real groups this section would only repeat the domain board above
+  if (activeGroups.length === 0) {
+    if (section) section.style.display = 'none';
+    return;
+  }
+  if (section) section.style.display = 'block';
 
   // Render each group
   for (const group of activeGroups) {
@@ -94,12 +231,10 @@ function renderGroups() {
     container.appendChild(groupCard);
   }
 
-  // Show ungrouped tabs as a special card
+  // Always rendered once groups exist: it is the only drop target for dragging
+  // a tab back out of a group.
   const ungroupedTabs = allTabs.filter(t => !t.groupId || t.groupId === -1);
-  if (ungroupedTabs.length > 0) {
-    const ungroupedCard = createUngroupedCard(ungroupedTabs);
-    container.appendChild(ungroupedCard);
-  }
+  container.appendChild(createUngroupedCard(ungroupedTabs));
 }
 
 function createGroupCard(group, tabs) {
@@ -111,14 +246,14 @@ function createGroupCard(group, tabs) {
   header.className = 'group-header';
   header.innerHTML = `
     <div class="group-color group-color-${group.color}"></div>
-    <div class="group-title" data-group-id="${group.id}">${group.title || 'Unnamed Group'}</div>
+    <div class="group-title" data-group-id="${group.id}">${escapeHtml(group.title || 'Unnamed Group')}</div>
     <div class="group-actions">
-      <button class="group-action-btn group-edit-btn" data-action="edit-group-name" data-group-id="${group.id}" title="Rename">
+      <button class="group-action-btn group-edit-btn" data-action="edit-group-name" data-group-id="${group.id}" title="Rename" aria-label="Rename group">
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.863 4.487Zm0 0L19.5 7.125" />
         </svg>
       </button>
-      <button class="group-action-btn group-close-btn" data-action="delete-group" data-group-id="${group.id}" title="Delete group">
+      <button class="group-action-btn group-close-btn" data-action="delete-group" data-group-id="${group.id}" title="Delete group" aria-label="Delete group">
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" />
         </svg>
@@ -144,8 +279,15 @@ function createGroupCard(group, tabs) {
   card.appendChild(header);
   card.appendChild(tabsList);
 
-  // Drag events
-  setupDropZone(card, group.id);
+  // Drop a tab here to move it into this group
+  setupDropZone(card, tabId => {
+    const tab = allTabs.find(t => t.id === tabId);
+    if (!tab || tab.groupId === group.id) return;
+    return runTabAction(
+      () => chrome.tabs.group({ groupId: group.id, tabIds: [tabId] }),
+      'Moved to group'
+    );
+  });
 
   return card;
 }
@@ -166,18 +308,44 @@ function createUngroupedCard(tabs) {
   const tabsList = document.createElement('div');
   tabsList.className = 'group-tabs-list';
 
-  for (const tab of tabs) {
-    const tabEl = createGroupTabElement(tab);
-    tabsList.appendChild(tabEl);
+  if (tabs.length === 0) {
+    tabsList.innerHTML = '<div class="group-empty-hint">Drop a tab here to ungroup it</div>';
+  } else {
+    const visible = visibleTabsOf(tabs, 'ungrouped');
+    for (const tab of visible) {
+      tabsList.appendChild(createGroupTabElement(tab));
+    }
+    if (tabs.length > visible.length) {
+      tabsList.appendChild(createOverflowChip('ungrouped', `+${tabs.length - visible.length} more`));
+    } else if (visible.length > CHIP_LIMIT) {
+      tabsList.appendChild(createOverflowChip('ungrouped', 'Show less', 'collapse-chips'));
+    }
   }
 
   card.appendChild(header);
   card.appendChild(tabsList);
 
   // Drop here to ungroup
-  setupUngroupedDropZone(card);
+  setupDropZone(card, tabId => {
+    const tab = allTabs.find(t => t.id === tabId);
+    if (!tab || !tab.groupId || tab.groupId === -1) return;
+    return runTabAction(() => chrome.tabs.ungroup(tabId), 'Removed from group');
+  });
 
   return card;
+}
+
+/**
+ * createOverflowChip(key, label, action)
+ * * The "+N more" / "Show less" row that folds long card lists.
+ */
+function createOverflowChip(key, label, action = 'expand-chips') {
+  const el = document.createElement('div');
+  el.className = 'page-chip page-chip-overflow';
+  el.dataset.action = action;
+  el.dataset.cardKey = key;
+  el.textContent = label;
+  return el;
 }
 
 function createGroupTabElement(tab) {
@@ -186,24 +354,14 @@ function createGroupTabElement(tab) {
   el.draggable = true;
   el.dataset.tabId = tab.id;
 
-  let domain = '';
-  let faviconUrl = '';
-  try {
-    const url = new URL(tab.url);
-    domain = url.hostname.replace(/^www\./, '');
-    faviconUrl = `https://www.google.com/s2/favicons?domain=${domain}&sz=16`;
-  } catch {
-    faviconUrl = tab.favIconUrl || '';
-  }
-
   const rawTitle = stripTitleSuffix(tab.title || tab.url || 'Untitled');
   const title = getCustomTitle(rawTitle, tab.url);
 
   el.innerHTML = `
-    <img class="group-tab-favicon" src="${faviconUrl}" alt="" onerror="this.style.display='none'">
-    <div class="group-tab-title" title="${(title || '').replace(/"/g, '&quot;')}">${title}</div>
+    <img class="group-tab-favicon" src="${escapeHtml(faviconFor(tab))}" alt="">
+    <div class="group-tab-title" title="${escapeHtml(title)}">${escapeHtml(title)}</div>
     <div class="group-tab-actions">
-      <button class="group-tab-action group-tab-close" data-tab-id="${tab.id}" title="Close tab">
+      <button class="group-tab-action group-tab-close" data-tab-id="${tab.id}" title="Close tab" aria-label="Close tab">
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" />
         </svg>
@@ -214,7 +372,7 @@ function createGroupTabElement(tab) {
   // Click to switch to tab
   el.addEventListener('click', (e) => {
     if (e.target.closest('.group-tab-action')) return;
-    chrome.tabs.update(tab.id, { active: true });
+    focusTab(tab.id);
   });
 
   // Close button — fully close tab
@@ -235,60 +393,51 @@ function createGroupTabElement(tab) {
 // Drag logic
 // ================================================================
 
+/**
+ * handleDragStart(e)
+ * * Both card systems (domain chips and group tab rows) share one drag
+ *   handler: the dragged tab id is the only thing a drop zone needs.
+ */
 function handleDragStart(e) {
-  const item = e.target.closest('.group-tab-item');
+  const item = e.target.closest('.group-tab-item, .page-chip');
   if (!item) return;
 
-  draggedTabId = parseInt(item.dataset.tabId, 10);
-  item.classList.add('dragging');
-
-  e.dataTransfer.effectAllowed = 'move';
-  e.dataTransfer.setData('text/plain', String(draggedTabId));
-}
-
-function handleDragEnd(e) {
-  const item = e.target.closest('.group-tab-item');
-  if (item) item.classList.remove('dragging');
-
-  document.querySelectorAll('.group-card, .new-group-dropzone').forEach(el => {
-    el.classList.remove('drag-over');
-  });
-
-  draggedTabId = null;
-}
-
-// Domain group tab drag handling
-function handleDomainDragStart(e) {
-  const chip = e.target.closest('.page-chip');
-  if (!chip) return;
-
-  // Get tab ID from data attribute
-  const tabId = parseInt(chip.dataset.tabId, 10);
+  const tabId = parseInt(item.dataset.tabId, 10);
   if (!tabId || isNaN(tabId)) return;
 
   draggedTabId = tabId;
-  chip.classList.add('dragging');
+  item.classList.add('dragging');
 
   e.dataTransfer.effectAllowed = 'move';
   e.dataTransfer.setData('text/plain', String(tabId));
 
-  // Show hint during drag
-  showToast('Drop onto a group or the new group zone');
+  // Nudge first-time users: chips can be dropped onto a group
+  if (item.classList.contains('page-chip')) {
+    showToast('Drop onto a group or the new group zone');
+  }
 }
 
-function handleDomainDragEnd(e) {
-  const chip = e.target.closest('.page-chip');
-  if (chip) chip.classList.remove('dragging');
+function handleDragEnd(e) {
+  const item = e.target.closest('.group-tab-item, .page-chip');
+  if (item) item.classList.remove('dragging');
 
-  document.querySelectorAll('.group-card, .new-group-dropzone').forEach(el => {
-    el.classList.remove('drag-over');
-  });
-
+  clearDragOver();
   draggedTabId = null;
 }
 
-function setupDropZone(element, groupId) {
+function clearDragOver() {
+  document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+}
+
+/**
+ * setupDropZone(element, onDrop)
+ * * One drop-target implementation for every zone (group cards, the ungrouped
+ *   card, the new-group strip). onDrop gets the dragged tab id; foreign drags
+ *   (files, selected text) are ignored.
+ */
+function setupDropZone(element, onDrop) {
   element.addEventListener('dragover', (e) => {
+    if (draggedTabId === null) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
     element.classList.add('drag-over');
@@ -304,95 +453,27 @@ function setupDropZone(element, groupId) {
     e.preventDefault();
     element.classList.remove('drag-over');
 
-    const tabId = parseInt(e.dataTransfer.getData('text/plain'), 10);
+    // draggedTabId stays set until dragend, which fires after drop
+    const tabId = draggedTabId ?? parseInt(e.dataTransfer.getData('text/plain'), 10);
     if (!tabId || isNaN(tabId)) return;
 
-    const tab = allTabs.find(t => t.id === tabId);
-    if (!tab || tab.groupId === groupId) return;
-
-    try {
-      await chrome.tabs.group({ groupId, tabIds: [tabId] });
-      showToast('Moved to group');
-      await refreshAll();
-    } catch (err) {
-      console.error('Move failed:', err);
-      showToast('Move failed');
-    }
+    await onDrop(tabId);
   });
 }
 
-function setupUngroupedDropZone(element) {
-  element.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    element.classList.add('drag-over');
-  });
-
-  element.addEventListener('dragleave', (e) => {
-    if (!element.contains(e.relatedTarget)) {
-      element.classList.remove('drag-over');
-    }
-  });
-
-  element.addEventListener('drop', async (e) => {
-    e.preventDefault();
-    element.classList.remove('drag-over');
-
-    const tabId = parseInt(e.dataTransfer.getData('text/plain'), 10);
-    if (!tabId || isNaN(tabId)) return;
-
-    const tab = allTabs.find(t => t.id === tabId);
-    if (!tab || !tab.groupId || tab.groupId === -1) return;
-
-    try {
-      await chrome.tabs.ungroup(tabId);
-      showToast('Removed from group');
-      await refreshAll();
-    } catch (err) {
-      console.error('Move failed:', err);
-      showToast('Move failed');
-    }
-  });
-}
-
-// New group drop zone setup
+/**
+ * setupNewGroupDropzone()
+ * * Dropping a tab on the strip between the two sections starts a new group.
+ */
 function setupNewGroupDropzone() {
   const dropzone = document.getElementById('newGroupDropzone');
   if (!dropzone) return;
 
-  dropzone.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    dropzone.classList.add('drag-over');
-  });
-
-  dropzone.addEventListener('dragleave', (e) => {
-    if (!dropzone.contains(e.relatedTarget)) {
-      dropzone.classList.remove('drag-over');
-    }
-  });
-
-  dropzone.addEventListener('drop', async (e) => {
-    e.preventDefault();
-    dropzone.classList.remove('drag-over');
-
-    const tabId = parseInt(e.dataTransfer.getData('text/plain'), 10);
-    if (!tabId || isNaN(tabId)) return;
-
-    try {
-      const randomColor = GROUP_COLORS[Math.floor(Math.random() * GROUP_COLORS.length)];
-      const newGroupId = await chrome.tabs.group({ tabIds: [tabId] });
-      await chrome.tabGroups.update(newGroupId, {
-        color: randomColor,
-        title: 'New Group'
-      });
-      showToast('New group created');
-      await refreshAll();
-    } catch (err) {
-      console.error('Failed to create group:', err);
-      showToast('Failed to create group');
-    }
-  });
+  setupDropZone(dropzone, tabId => runTabAction(async () => {
+    const color = GROUP_COLORS[Math.floor(Math.random() * GROUP_COLORS.length)];
+    const newGroupId = await chrome.tabs.group({ tabIds: [tabId] });
+    await chrome.tabGroups.update(newGroupId, { color, title: 'New Group' });
+  }, 'New group created'));
 }
 
 // ================================================================
@@ -401,7 +482,7 @@ function setupNewGroupDropzone() {
 
 /**
  * editGroupName(groupId, titleEl)
- * * Edit a tab group name
+ * * Edit a tab group name in place.
  */
 async function editGroupName(groupId, titleEl) {
   const currentTitle = titleEl.textContent;
@@ -409,28 +490,34 @@ async function editGroupName(groupId, titleEl) {
   input.type = 'text';
   input.value = currentTitle;
   input.className = 'group-title-input';
+  input.setAttribute('aria-label', 'Group name');
 
   // Replace title with input
   titleEl.replaceWith(input);
   input.focus();
   input.select();
 
-  // Save function
+  // Enter and blur can both fire for the same edit — save exactly once
+  let settled = false;
+
   const save = async () => {
+    if (settled) return;
+    settled = true;
+
     const newTitle = input.value.trim();
-    if (newTitle && newTitle !== currentTitle) {
-      try {
-        await chrome.tabGroups.update(groupId, { title: newTitle });
-        showToast('Group renamed');
-        await refreshAll();
-      } catch (err) {
-        console.error('Rename failed:', err);
-        showToast('Rename failed');
-        titleEl.textContent = currentTitle;
-        input.replaceWith(titleEl);
-      }
-    } else {
-      // No change, restore original
+    if (!newTitle || newTitle === currentTitle) {
+      input.replaceWith(titleEl);
+      flushRefresh();
+      return;
+    }
+
+    try {
+      await chrome.tabGroups.update(groupId, { title: newTitle });
+      showToast('Group renamed');
+      await refreshAll();
+    } catch (err) {
+      console.error('[TreeTab] Rename failed:', err);
+      showToast('Rename failed');
       input.replaceWith(titleEl);
     }
   };
@@ -441,6 +528,7 @@ async function editGroupName(groupId, titleEl) {
       e.preventDefault();
       save();
     } else if (e.key === 'Escape') {
+      settled = true;
       input.replaceWith(titleEl);
     }
   });
@@ -450,44 +538,50 @@ async function editGroupName(groupId, titleEl) {
 }
 
 /**
+ * removeTabs(tabIds)
+ * * Close tabs, tolerating ids that vanished between render and click —
+ *   chrome.tabs.remove() rejects the whole batch if a single id is stale.
+ */
+async function removeTabs(tabIds) {
+  if (tabIds.length === 0) return;
+
+  try {
+    await chrome.tabs.remove(tabIds);
+  } catch {
+    for (const id of tabIds) {
+      try {
+        await chrome.tabs.remove(id);
+      } catch {
+        // already closed elsewhere
+      }
+    }
+  }
+}
+
+/**
  * deleteGroup(groupId)
- * * Delete a tab group and close all its tabs
+ * * Delete a tab group and close all its tabs. Closing the last tab removes
+ *   the group itself: chrome.tabGroups exposes no remove() method.
  */
 async function deleteGroup(groupId) {
   const groupTabs = allTabs.filter(t => t.groupId === groupId);
   if (groupTabs.length === 0) return;
 
-  const tabIds = groupTabs.map(t => t.id);
-
-  try {
-    playCloseSound();
-    // Close all tabs and remove group
-    await chrome.tabs.remove(tabIds);
-    await chrome.tabGroups.remove(groupId);
-    showToast('Group and tabs deleted');
-    await refreshAll();
-  } catch (err) {
-    console.error('Failed to delete group:', err);
-    showToast('Delete failed');
-  }
+  playCloseSound();
+  await runTabAction(
+    () => removeTabs(groupTabs.map(t => t.id)),
+    'Group and tabs closed'
+  );
 }
 
 // ================================================================
 // Domain grouping rendering (bottom) — original feature
 // ================================================================
 
-// Landing page URL patterns
-const LANDING_PAGE_PATTERNS = [
-  { hostname: 'mail.google.com', test: (p, h) => !h.includes('#inbox/') && !h.includes('#sent/') },
-  { hostname: 'x.com', pathExact: ['/home'] },
-  { hostname: 'www.linkedin.com', pathExact: ['/'] },
-  { hostname: 'github.com', pathExact: ['/'] },
-  { hostname: 'www.youtube.com', pathExact: ['/'] },
-  { hostname: 'ehall.cdu.edu.cn', test: (p, h) => h.includes('act=fp/formHome') },
-  { hostname: 'www.bilibili.com', pathExact: ['/'] },
-  { hostname: 'gitcode.com', pathExact: ['/'] },
-];
-
+/**
+ * isLandingPage(url)
+ * * True for the "just opened the site" URLs that share the Homepages card.
+ */
 function isLandingPage(url) {
   try {
     const parsed = new URL(url);
@@ -512,7 +606,7 @@ function organizeByDomain(tabs) {
         continue;
       }
 
-      let hostname = tab.url?.startsWith('file://')
+      const hostname = tab.url?.startsWith('file://')
         ? 'local-files'
         : new URL(tab.url).hostname;
 
@@ -528,34 +622,19 @@ function organizeByDomain(tabs) {
   }
 
   if (landingTabs.length > 0) {
-    groupMap['__landing-pages__'] = { domain: '__landing-pages__', tabs: landingTabs };
+    groupMap[LANDING_DOMAIN] = { domain: LANDING_DOMAIN, tabs: landingTabs };
   }
 
   // Sort: landing pages first, then by tab count
   return Object.values(groupMap).sort((a, b) => {
-    const aIsLanding = a.domain === '__landing-pages__';
-    const bIsLanding = b.domain === '__landing-pages__';
+    const aIsLanding = a.domain === LANDING_DOMAIN;
+    const bIsLanding = b.domain === LANDING_DOMAIN;
     if (aIsLanding !== bIsLanding) return aIsLanding ? -1 : 1;
     return b.tabs.length - a.tabs.length;
   });
 }
 
 function friendlyDomain(hostname) {
-  const FRIENDLY_DOMAINS = {
-    'github.com': 'GitHub',
-    'www.github.com': 'GitHub',
-    'youtube.com': 'YouTube',
-    'www.youtube.com': 'YouTube',
-    'x.com': 'X',
-    'twitter.com': 'X',
-    'reddit.com': 'Reddit',
-    'www.reddit.com': 'Reddit',
-    'linkedin.com': 'LinkedIn',
-    'www.linkedin.com': 'LinkedIn',
-    'mail.google.com': 'Gmail',
-    'local-files': 'Local Files',
-  };
-
   if (FRIENDLY_DOMAINS[hostname]) return FRIENDLY_DOMAINS[hostname];
 
   let clean = hostname
@@ -593,13 +672,6 @@ function getCustomTitle(title, url) {
 
       if (actMatch) {
         const act = actMatch[1]; // e.g. fp/svsmng/processMng or fp/printing
-
-        // Special name mapping (overrides auto-extraction)
-        const SPECIAL_NAMES = {
-          'fp/formHome': '首页',
-          'fp/svsmng': '服务配置管理',
-          'fp/printing': '打印模板管理',
-        };
 
         // Try to get friendly name from mapping
         let actName = SPECIAL_NAMES[act];
@@ -641,30 +713,6 @@ function getCustomTitle(title, url) {
 function formatCamelCase(str) {
   if (!str) return '';
 
-  // Common vocabulary mapping
-  const VOCAB = {
-    'form': '表单',
-    'process': '流程',
-    'mng': '管理',
-    'design': '设计',
-    'home': '首页',
-    'business': '业务',
-    'report': '报表',
-    'printing': '打印',
-    'view': '查看',
-    'edit': '编辑',
-    'create': '创建',
-    'list': '列表',
-    'detail': '详情',
-    'search': '搜索',
-    'query': '查询',
-    'config': '配置',
-    'setting': '设置',
-    'user': '用户',
-    'admin': '管理',
-    'svs': '服务',
-  };
-
   // Try direct word match (case-insensitive)
   const lowerStr = str.toLowerCase();
   for (const [en, cn] of Object.entries(VOCAB)) {
@@ -688,44 +736,68 @@ function renderDomains() {
   const container = document.getElementById('domainsMissions');
   const countEl = document.getElementById('domainsCount');
   const section = document.getElementById('domainsSection');
+  const dropzone = document.getElementById('newGroupDropzone');
 
   if (!container) return;
   container.innerHTML = '';
 
   domainGroups = organizeByDomain(allTabs);
 
-  if (domainGroups.length === 0) {
-    section.style.display = 'none';
+  // Nothing else open: a friendly panel beats an empty grid
+  if (allTabs.length === 0) {
+    if (section) section.style.display = 'block';
+    if (countEl) countEl.textContent = '';
+    if (dropzone) dropzone.style.display = 'none';
+    container.innerHTML = renderEmptyState();
     return;
   }
 
-  section.style.display = 'block';
-  countEl.innerHTML = `${domainGroups.length} domains`;
+  if (section) section.style.display = 'block';
+  if (dropzone) dropzone.style.display = '';
+  if (countEl) countEl.textContent = `${domainGroups.length} domains`;
 
   for (const group of domainGroups) {
     const card = createDomainCard(group);
     container.appendChild(card);
   }
 
-  // Add drag events to all domain group tab chips
-  const chips = container.querySelectorAll('.page-chip[draggable="true"]');
-  chips.forEach(chip => {
-    chip.addEventListener('dragstart', handleDomainDragStart);
-    chip.addEventListener('dragend', handleDomainDragEnd);
+  // Chips are rebuilt on every render, so re-attach their drag handlers
+  container.querySelectorAll('.page-chip[draggable="true"]').forEach(chip => {
+    chip.addEventListener('dragstart', handleDragStart);
+    chip.addEventListener('dragend', handleDragEnd);
   });
+}
+
+/**
+ * renderEmptyState()
+ * * Markup for the "nothing else open" panel (styles: .missions-empty-state).
+ */
+function renderEmptyState() {
+  return `
+    <div class="missions-empty-state">
+      <div class="empty-checkmark">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+        </svg>
+      </div>
+      <div class="empty-title">All clear</div>
+      <div class="empty-subtitle">Nothing else open in this window.</div>
+    </div>`;
 }
 
 function createDomainCard(group) {
   const tabs = group.tabs;
-  const tabCount = tabs.length;
-  const isLanding = group.domain === '__landing-pages__';
+  const isLanding = group.domain === LANDING_DOMAIN;
 
-  // Count duplicates
+  // Pinned tabs are listed, but no bulk action ever closes them
+  const closableTabs = tabs.filter(t => !t.pinned);
+
   const urlCounts = {};
-  for (const tab of tabs) urlCounts[tab.url] = (urlCounts[tab.url] || 0) + 1;
-  const dupeUrls = Object.entries(urlCounts).filter(([, c]) => c > 1);
-  const hasDupes = dupeUrls.length > 0;
-  const totalExtras = dupeUrls.reduce((s, [, c]) => s + c - 1, 0);
+  for (const tab of closableTabs) urlCounts[tab.url] = (urlCounts[tab.url] || 0) + 1;
+
+  const dupeUrls = Object.entries(urlCounts).filter(([, count]) => count > 1);
+  const totalExtras = dupeUrls.reduce((sum, [, count]) => sum + count - 1, 0);
+  const hasDupes = totalExtras > 0;
 
   const card = document.createElement('div');
   card.className = `mission-card domain-card ${hasDupes ? 'has-amber-bar' : 'has-neutral-bar'}`;
@@ -735,14 +807,14 @@ function createDomainCard(group) {
     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width:10px;height:10px">
       <path stroke-linecap="round" stroke-linejoin="round" d="M3 8.25V18a2.25 2.25 0 0 0 2.25 2.25h13.5A2.25 2.25 0 0 0 21 18V8.25m-18 0V6a2.25 2.25 0 0 1 2.25-2.25h13.5A2.25 2.25 0 0 1 21 6v2.25m-18 0h18" />
     </svg>
-    ${tabCount} tabs
+    ${tabs.length} tabs
   </span>`;
 
   if (hasDupes) {
     badgesHtml += `<span class="open-tabs-badge" style="color:var(--accent-amber);background:rgba(200,113,58,0.08);">${totalExtras} duplicates</span>`;
   }
 
-  // Tab chips
+  // Tab chips — one per URL, duplicates collapse into a "(2x)" tag
   const seen = new Set();
   const uniqueTabs = tabs.filter(t => {
     if (seen.has(t.url)) return false;
@@ -750,53 +822,58 @@ function createDomainCard(group) {
     return true;
   });
 
-  const visibleTabs = uniqueTabs.slice(0, 8);
-  const extraCount = uniqueTabs.length - visibleTabs.length;
+  const visibleTabs = visibleTabsOf(uniqueTabs, group.domain);
+  const hiddenCount = uniqueTabs.length - visibleTabs.length;
 
   let chipsHtml = visibleTabs.map(tab => {
-    // Use custom title
     const rawTitle = stripTitleSuffix(tab.title || tab.url);
     const label = getCustomTitle(rawTitle, tab.url);
     const count = urlCounts[tab.url];
     const dupeTag = count > 1 ? `<span class="chip-dupe-badge">(${count}x)</span>` : '';
     const chipClass = count > 1 ? 'chip-has-dupes' : '';
+    const pin = tab.pinned ? `<svg class="chip-pin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 3.75h7.5m-5.25 0v5.25L8.25 11.25v1.5h7.5v-1.5L13.5 9V3.75M12 12.75v7.5" /></svg>` : '';
 
-    let domain = '';
-    try { domain = new URL(tab.url).hostname; } catch {}
-    const faviconUrl = domain ? `https://www.google.com/s2/favicons?domain=${domain}&sz=16` : '';
-
-    // Add draggable and tab ID to chips
     return `<div class="page-chip clickable ${chipClass}"
       draggable="true"
       data-tab-id="${tab.id}"
-      data-tab-url="${tab.url}"
-      data-action="focus-tab">
-      ${faviconUrl ? `<img class="chip-favicon" src="${faviconUrl}" alt="" onerror="this.style.display='none'">` : ''}
-      <span class="chip-text">${label}</span>${dupeTag}
+      data-action="focus-tab"
+      role="button"
+      tabindex="0"
+      title="${escapeHtml(label)}">
+      ${pin}<img class="chip-favicon" src="${escapeHtml(faviconFor(tab))}" alt="">
+      <span class="chip-text">${escapeHtml(label)}</span>${dupeTag}
       <div class="chip-actions">
-        <button class="chip-action chip-close" data-action="close-single-tab" data-tab-url="${tab.url}" title="Close tab">
+        <button class="chip-action chip-close" data-action="close-single-tab" data-tab-id="${tab.id}" title="Close tab" aria-label="Close tab">
           <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
         </button>
       </div>
     </div>`;
   }).join('');
 
-  if (extraCount > 0) {
-    chipsHtml += `<div class="page-chip page-chip-overflow" data-action="expand-chips">+${extraCount} more</div>`;
+  if (hiddenCount > 0) {
+    chipsHtml += `<div class="page-chip page-chip-overflow" data-action="expand-chips" data-card-key="${escapeHtml(group.domain)}" role="button" tabindex="0">+${hiddenCount} more</div>`;
+  } else if (visibleTabs.length > CHIP_LIMIT) {
+    chipsHtml += `<div class="page-chip page-chip-overflow" data-action="collapse-chips" data-card-key="${escapeHtml(group.domain)}" role="button" tabindex="0">Show less</div>`;
   }
 
   // Action buttons
-  let actionsHtml = `<button class="action-btn close-tabs" data-action="close-domain-tabs" data-domain="${group.domain}">Close all ${tabCount} tabs</button>`;
+  let actionsHtml = '';
+
+  if (closableTabs.length > 0) {
+    const pinnedNote = closableTabs.length < tabs.length
+      ? 'Pinned tabs are kept open'
+      : 'Close every tab in this card';
+    actionsHtml += `<button class="action-btn close-tabs" data-action="close-domain-tabs" data-domain="${escapeHtml(group.domain)}" title="${pinnedNote}">Close all ${closableTabs.length} tabs</button>`;
+  }
 
   if (hasDupes) {
-    const dupeUrlsEncoded = dupeUrls.map(([url]) => encodeURIComponent(url)).join(',');
-    actionsHtml += `<button class="action-btn" data-action="dedup-keep-one" data-dupe-urls="${dupeUrlsEncoded}">Close ${totalExtras} duplicates</button>`;
+    actionsHtml += `<button class="action-btn" data-action="dedup-keep-one" data-domain="${escapeHtml(group.domain)}">Close ${totalExtras} duplicates</button>`;
   }
 
   card.innerHTML = `
     <div class="mission-content">
       <div class="mission-top">
-        <span class="mission-name">${isLanding ? 'Homepages' : friendlyDomain(group.domain)}</span>
+        <span class="mission-name">${escapeHtml(isLanding ? 'Homepages' : friendlyDomain(group.domain))}</span>
         ${badgesHtml}
       </div>
       <div class="mission-pages">${chipsHtml}</div>
@@ -811,12 +888,29 @@ function createDomainCard(group) {
 // Close animation (sound + confetti)
 // ================================================================
 
+/**
+ * ensureAudioContext()
+ * * One shared AudioContext: creating and tearing down one per close hits the
+ *   browser's context limit as soon as tabs are closed in bulk.
+ */
+function ensureAudioContext() {
+  if (!audioContext) {
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  }
+
+  if (audioContext.state === 'suspended') {
+    audioContext.resume().catch(() => {});
+  }
+
+  return audioContext;
+}
+
 function playCloseSound() {
   try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const ctx = ensureAudioContext();
     const t = ctx.currentTime;
     const duration = 0.25;
-    const buffer = ctx.createBuffer(1, ctx.sampleRate * duration, ctx.sampleRate);
+    const buffer = ctx.createBuffer(1, Math.ceil(ctx.sampleRate * duration), ctx.sampleRate);
     const data = buffer.getChannelData(0);
 
     for (let i = 0; i < data.length; i++) {
@@ -840,9 +934,9 @@ function playCloseSound() {
 
     source.connect(filter).connect(gain).connect(ctx.destination);
     source.start(t);
-
-    setTimeout(() => ctx.close(), 500);
-  } catch {}
+  } catch {
+    // Audio is decorative — it must never break a close
+  }
 }
 
 function shootConfetti(x, y) {
@@ -897,9 +991,14 @@ function shootConfetti(x, y) {
   }
 }
 
+/**
+ * closeTab(tabId, element)
+ * * Play the close animation, then actually close the tab and repaint — the
+ *   repaint happens even when the tab was already closed elsewhere, so a
+ *   stale card never survives on screen.
+ */
 async function closeTab(tabId, element) {
-  try {
-    // Animation
+  if (element) {
     element.style.transition = 'opacity 0.2s, transform 0.2s';
     element.style.opacity = '0';
     element.style.transform = 'scale(0.9)';
@@ -907,14 +1006,18 @@ async function closeTab(tabId, element) {
     // Confetti effect
     const rect = element.getBoundingClientRect();
     shootConfetti(rect.left + rect.width / 2, rect.top + rect.height / 2);
-    playCloseSound();
-
-    await new Promise(r => setTimeout(r, 200));
-    await chrome.tabs.remove(tabId);
-    await refreshAll();
-  } catch (err) {
-    console.error('Close failed:', err);
   }
+
+  playCloseSound();
+  await new Promise(r => setTimeout(r, 200));
+
+  try {
+    await chrome.tabs.remove(tabId);
+  } catch {
+    // Already closed by another page or window
+  }
+
+  await refreshAll();
 }
 
 // ================================================================
@@ -927,54 +1030,56 @@ document.addEventListener('click', async (e) => {
 
   const action = actionEl.dataset.action;
 
+  // Fold / unfold a long card list
+  if (action === 'expand-chips' || action === 'collapse-chips') {
+    const key = actionEl.dataset.cardKey;
+    if (action === 'expand-chips') expandedCards.add(key);
+    else expandedCards.delete(key);
+    renderDomains();
+    renderGroups();
+    return;
+  }
+
   // Close duplicate TreeTab tabs
   if (action === 'close-tabout-dupes') {
-    const extensionId = chrome.runtime.id;
-    const newtabUrl = `chrome-extension://${extensionId}/index.html`;
-    const allTabs = await chrome.tabs.query({});
-    const currentWindow = await chrome.windows.getCurrent();
-    const tabOutTabs = allTabs.filter(t =>
+    const newtabUrl = `chrome-extension://${chrome.runtime.id}/index.html`;
+    const openTabs = await chrome.tabs.query({});
+    const newtabTabs = openTabs.filter(t =>
       t.url === newtabUrl || t.url === 'chrome://newtab/'
     );
 
-    if (tabOutTabs.length > 1) {
-      const keep = tabOutTabs.find(t => t.active && t.windowId === currentWindow.id) ||
-                   tabOutTabs.find(t => t.active) ||
-                   tabOutTabs[0];
-      const toClose = tabOutTabs.filter(t => t.id !== keep.id).map(t => t.id);
-      if (toClose.length > 0) await chrome.tabs.remove(toClose);
+    if (newtabTabs.length > 1) {
+      const keep = newtabTabs.find(t => t.active && t.windowId === pageWindowId) ||
+                   newtabTabs.find(t => t.active) ||
+                   newtabTabs[0];
+      const toClose = newtabTabs.filter(t => t.id !== keep.id).map(t => t.id);
 
-      playCloseSound();
-      const banner = document.getElementById('tabOutDupeBanner');
-      if (banner) banner.style.display = 'none';
-      showToast('Closed extra TreeTab tabs');
+      if (toClose.length > 0) {
+        playCloseSound();
+        await removeTabs(toClose);
+        showToast('Closed extra TreeTab tabs');
+        await refreshAll();
+      }
     }
     return;
   }
 
   // Switch to tab
   if (action === 'focus-tab') {
-    const url = actionEl.dataset.tabUrl;
-    const tab = allTabs.find(t => t.url === url);
-    if (tab) await chrome.tabs.update(tab.id, { active: true });
+    await focusTab(parseInt(actionEl.dataset.tabId, 10));
     return;
   }
 
   // Close single tab
   if (action === 'close-single-tab') {
-    e.stopPropagation();
-    const url = actionEl.dataset.tabUrl;
-    const tab = allTabs.find(t => t.url === url);
-    if (tab) {
-      const chip = actionEl.closest('.page-chip');
-      await closeTab(tab.id, chip);
-    }
+    const tabId = parseInt(actionEl.dataset.tabId, 10);
+    if (!tabId || isNaN(tabId)) return;
+    await closeTab(tabId, actionEl.closest('.page-chip') || actionEl.closest('.group-tab-item'));
     return;
   }
 
   // Edit group name
   if (action === 'edit-group-name') {
-    e.stopPropagation();
     const groupId = parseInt(actionEl.dataset.groupId, 10);
     const titleEl = actionEl.closest('.group-header').querySelector('.group-title');
     if (groupId && titleEl) {
@@ -985,7 +1090,6 @@ document.addEventListener('click', async (e) => {
 
   // Delete group (both group and tabs)
   if (action === 'delete-group') {
-    e.stopPropagation();
     const groupId = parseInt(actionEl.dataset.groupId, 10);
     if (groupId) {
       const group = allGroups.find(g => g.id === groupId);
@@ -997,79 +1101,92 @@ document.addEventListener('click', async (e) => {
     return;
   }
 
-  // Close entire domain group
+  // Close every closable tab in one domain card — bulk, so it asks twice
   if (action === 'close-domain-tabs') {
-    const domain = actionEl.dataset.domain;
-    const group = domainGroups.find(g => g.domain === domain);
+    const group = domainGroups.find(g => g.domain === actionEl.dataset.domain);
     if (!group) return;
 
-    const urls = group.tabs.map(t => t.url);
-    const useExact = domain === '__landing-pages__';
+    const tabIds = group.tabs.filter(t => !t.pinned).map(t => t.id);
+    if (tabIds.length === 0) return;
 
-    const allTabs = await chrome.tabs.query({});
-    const toClose = [];
+    if (needsConfirm(actionEl, `Confirm: close ${tabIds.length} tabs`)) return;
 
-    if (useExact) {
-      const urlSet = new Set(urls);
-      toClose.push(...allTabs.filter(t => urlSet.has(t.url)).map(t => t.id));
-    } else {
-      const targetHostnames = urls.map(u => {
-        try { return new URL(u).hostname; } catch { return null; }
-      }).filter(Boolean);
-
-      toClose.push(...allTabs.filter(t => {
-        try { return targetHostnames.includes(new URL(t.url).hostname); }
-        catch { return false; }
-      }).map(t => t.id));
+    playCloseSound();
+    const card = actionEl.closest('.mission-card');
+    if (card) {
+      const rect = card.getBoundingClientRect();
+      shootConfetti(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      card.classList.add('closing');
+      // Let the fade-out play before the re-render wipes the card
+      await new Promise(r => setTimeout(r, 220));
     }
 
-    if (toClose.length > 0) {
-      playCloseSound();
-      const card = actionEl.closest('.mission-card');
-      if (card) {
-        const rect = card.getBoundingClientRect();
-        shootConfetti(rect.left + rect.width / 2, rect.top + rect.height / 2);
-        card.classList.add('closing');
-      }
-
-      await chrome.tabs.remove(toClose);
-      await refreshAll();
-      showToast(`Closed ${toClose.length} tabs`);
-    }
+    await removeTabs(tabIds);
+    await refreshAll();
+    showToast(`Closed ${tabIds.length} tabs`);
     return;
   }
 
-  // Deduplication
+  // Deduplication — one survivor per URL, scoped to what the card shows
   if (action === 'dedup-keep-one') {
-    const urlsEncoded = actionEl.dataset.dupeUrls || '';
-    const urls = urlsEncoded.split(',').map(u => decodeURIComponent(u)).filter(Boolean);
-    if (urls.length === 0) return;
+    const group = domainGroups.find(g => g.domain === actionEl.dataset.domain);
+    if (!group) return;
 
-    const allTabs = await chrome.tabs.query({});
-    const toClose = [];
+    const byUrl = new Map();
+    for (const tab of group.tabs) {
+      if (tab.pinned) continue;
+      if (!byUrl.has(tab.url)) byUrl.set(tab.url, []);
+      byUrl.get(tab.url).push(tab);
+    }
 
-    for (const url of urls) {
-      const matching = allTabs.filter(t => t.url === url);
-      const keep = matching.find(t => t.active) || matching[0];
-      for (const tab of matching) {
-        if (tab.id !== keep.id) toClose.push(tab.id);
+    const tabIds = [];
+    for (const tabs of byUrl.values()) {
+      if (tabs.length < 2) continue;
+      const keep = tabs.find(t => t.active) || tabs[0];
+      for (const tab of tabs) {
+        if (tab.id !== keep.id) tabIds.push(tab.id);
       }
     }
+    if (tabIds.length === 0) return;
 
-    if (toClose.length > 0) {
-      playCloseSound();
-      await chrome.tabs.remove(toClose);
-      await refreshAll();
-      showToast('Duplicates closed');
-    }
+    if (needsConfirm(actionEl, `Confirm: close ${tabIds.length} duplicates`)) return;
+
+    playCloseSound();
+    await removeTabs(tabIds);
+    await refreshAll();
+    showToast(`Closed ${tabIds.length} duplicates`);
     return;
   }
 });
+
+// Enter / Space activate the [data-action] elements that are not buttons
+// (page chips, "+N more" rows) so the board is keyboard-operable.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  if (!e.target?.closest) return;
+
+  const el = e.target.closest('[data-action]');
+  if (!el || el.tagName === 'BUTTON' || e.target !== el) return;
+
+  e.preventDefault();
+  el.click();
+});
+
+// Hide images that fail to load. The per-element onerror attribute this
+// replaces is blocked by the extension CSP.
+document.addEventListener('error', (e) => {
+  if (e.target instanceof HTMLImageElement) e.target.style.display = 'none';
+}, true);
 
 // ================================================================
 // Helper functions
 // ================================================================
 
+/**
+ * showToast(message)
+ * * Transient status line. The previous timer is cleared first so
+ *   back-to-back messages each get their full time on screen.
+ */
 function showToast(message) {
   const toast = document.getElementById('toast');
   const toastText = document.getElementById('toastText');
@@ -1077,7 +1194,9 @@ function showToast(message) {
 
   toastText.textContent = message;
   toast.classList.add('visible');
-  setTimeout(() => toast.classList.remove('visible'), 2500);
+
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.remove('visible'), 2500);
 }
 
 /**
@@ -1115,19 +1234,22 @@ function getDateDisplay() {
   });
 }
 
+/**
+ * checkTabOutDupes()
+ * * Offer to close the other TreeTab new-tab pages.
+ */
 async function checkTabOutDupes() {
-  const extensionId = chrome.runtime.id;
-  const newtabUrl = `chrome-extension://${extensionId}/index.html`;
-  const allTabs = await chrome.tabs.query({});
-  const tabOutTabs = allTabs.filter(t =>
+  const newtabUrl = `chrome-extension://${chrome.runtime.id}/index.html`;
+  const openTabs = await chrome.tabs.query({});
+  const newtabTabs = openTabs.filter(t =>
     t.url === newtabUrl || t.url === 'chrome://newtab/'
   );
 
   const banner = document.getElementById('tabOutDupeBanner');
   const countEl = document.getElementById('tabOutDupeCount');
 
-  if (tabOutTabs.length > 1) {
-    if (countEl) countEl.textContent = tabOutTabs.length;
+  if (newtabTabs.length > 1) {
+    if (countEl) countEl.textContent = newtabTabs.length;
     if (banner) banner.style.display = 'flex';
   } else {
     if (banner) banner.style.display = 'none';
@@ -1135,10 +1257,185 @@ async function checkTabOutDupes() {
 }
 
 async function refreshAll() {
-  await fetchData();
-  renderDomains();  // Render domain groups first
-  renderGroups();   // Then render tab groups
-  checkTabOutDupes();
+  try {
+    captureScrollPositions();
+    await fetchData();
+    renderDomains();  // Render domain groups first
+    renderGroups();   // Then render tab groups
+    restoreScrollPositions();
+    checkTabOutDupes();
+  } catch (err) {
+    // A reloaded/unloaded extension leaves this page with no chrome.* APIs:
+    // keep the last board on screen instead of throwing on every event.
+    console.error('[TreeTab] Refresh failed:', err);
+  }
+}
+
+// ================================================================
+// Live board — Chrome events re-render the page
+// ================================================================
+
+/**
+ * scheduleRefresh()
+ * * Debounced refreshAll() for Chrome tab/group events: one page load can
+ *   emit dozens of them, and they are all one repaint as far as the board
+ *   is concerned.
+ */
+function scheduleRefresh() {
+  refreshQueued = true;
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(flushRefresh, REFRESH_DEBOUNCE_MS);
+}
+
+/**
+ * flushRefresh()
+ * * Run a queued refresh unless the user is mid-interaction (renaming a
+ *   group, dragging a tab) or the page is in the background — the queue flag
+ *   stays set so the next event or visibility change picks it up.
+ */
+async function flushRefresh() {
+  if (!refreshQueued) return;
+  if (document.hidden || draggedTabId !== null || document.querySelector('.group-title-input')) return;
+
+  refreshQueued = false;
+  await refreshAll();
+}
+
+/**
+ * watchBrowserState()
+ * * Subscribe the board to Chrome's tab events. MUST run after the
+ *   extension-context gate in init(): a stale page context has no chrome.*
+ *   APIs at all, and touching one would throw.
+ */
+function watchBrowserState() {
+  const onChange = () => scheduleRefresh();
+
+  chrome.tabs.onCreated.addListener(onChange);
+  chrome.tabs.onRemoved.addListener(onChange);
+  chrome.tabs.onMoved.addListener(onChange);
+  chrome.tabs.onAttached.addListener(onChange);
+  chrome.tabs.onDetached.addListener(onChange);
+  chrome.tabs.onReplaced.addListener(onChange);
+
+  // onUpdated also fires for loading/audible changes we do not render
+  chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+    const visibleChange = changeInfo.url || changeInfo.title ||
+      changeInfo.favIconUrl !== undefined || changeInfo.pinned !== undefined ||
+      changeInfo.groupId !== undefined;
+    if (visibleChange) onChange();
+  });
+
+  chrome.tabGroups.onCreated.addListener(onChange);
+  chrome.tabGroups.onMoved.addListener(onChange);
+  chrome.tabGroups.onRemoved.addListener(onChange);
+  chrome.tabGroups.onUpdated.addListener(onChange);
+
+  // Returning to this window is exactly when the board has to be current
+  chrome.windows.onFocusChanged.addListener(id => {
+    if (id === pageWindowId) scheduleRefresh();
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) scheduleRefresh();
+  });
+}
+
+/**
+ * captureScrollPositions() / restoreScrollPositions()
+ * * A re-render replaces every card and would reset each group's scroll
+ *   offset; remember them so live refreshes do not jump the user around.
+ */
+function captureScrollPositions() {
+  cardScrollPositions.clear();
+
+  document.querySelectorAll('.group-card[data-group-id]').forEach(card => {
+    const list = card.querySelector('.group-tabs-list');
+    if (list && list.scrollTop > 0) {
+      cardScrollPositions.set(card.dataset.groupId, list.scrollTop);
+    }
+  });
+}
+
+function restoreScrollPositions() {
+  if (cardScrollPositions.size === 0) return;
+
+  document.querySelectorAll('.group-card[data-group-id]').forEach(card => {
+    const offset = cardScrollPositions.get(card.dataset.groupId);
+    if (!offset) return;
+
+    const list = card.querySelector('.group-tabs-list');
+    if (list) list.scrollTop = offset;
+  });
+}
+
+// ================================================================
+// Tab actions
+// ================================================================
+
+/**
+ * runTabAction(action, successMessage)
+ * * Run a tab mutation, report the outcome, and re-render either way — the
+ *   board must never keep showing a tab the browser already moved.
+ */
+async function runTabAction(action, successMessage) {
+  try {
+    await action();
+    if (successMessage) showToast(successMessage);
+    return true;
+  } catch (err) {
+    console.error('[TreeTab] Tab action failed:', err);
+    showToast('Action failed');
+    return false;
+  } finally {
+    await refreshAll();
+  }
+}
+
+/**
+ * focusTab(tabId)
+ * * Activate a tab; if it is already gone, repaint instead of doing nothing.
+ */
+async function focusTab(tabId) {
+  if (!tabId || isNaN(tabId)) return;
+
+  try {
+    await chrome.tabs.update(tabId, { active: true });
+  } catch {
+    await refreshAll();
+  }
+}
+
+/**
+ * needsConfirm(el, label)
+ * * Two-step guard for bulk destructive buttons: the first click only arms
+ *   the button, a second click within CONFIRM_TIMEOUT_MS commits.
+ *   Returns true while the button is still unarmed.
+ */
+function needsConfirm(el, label) {
+  if (el.dataset.confirming === '1') {
+    resetConfirm(el);
+    return false;
+  }
+
+  // Only one button is ever armed — arming a new one disarms the rest
+  document.querySelectorAll('[data-confirming="1"]').forEach(resetConfirm);
+
+  el.dataset.confirming = '1';
+  el.dataset.restingLabel = el.textContent;
+  el.textContent = label;
+  el.classList.add('confirming');
+
+  clearTimeout(confirmTimer);
+  confirmTimer = setTimeout(() => resetConfirm(el), CONFIRM_TIMEOUT_MS);
+  return true;
+}
+
+function resetConfirm(el) {
+  if (!el || el.dataset.confirming !== '1') return;
+
+  el.dataset.confirming = '0';
+  el.textContent = el.dataset.restingLabel || el.textContent;
+  el.classList.remove('confirming');
 }
 
 // ================================================================
@@ -1188,19 +1485,12 @@ function recoverExtensionContextOnce() {
 }
 
 /**
- * initTheme()
- * * Init theme: saved preference > system preference > time of day
+ * initTheme(savedTheme)
+ * * Apply the stored theme (or the system/time-of-day default) and keep
+ *   following the system preference while the user has not saved one.
  */
-async function initTheme() {
-  // Try reading saved preference from storage
-  const { [THEME_KEY]: savedTheme } = await chrome.storage.local.get(THEME_KEY);
-
-  if (savedTheme) {
-    // User has a saved preference
-    applyTheme(savedTheme);
-  } else {
-    applyTheme(detectDefaultTheme());
-  }
+function initTheme(savedTheme) {
+  applyTheme(savedTheme || detectDefaultTheme());
 
   // Listen for system theme changes
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
@@ -1271,20 +1561,20 @@ const BG_MAX_EDGE = 1600;
 const BG_IMAGE_QUALITY = 0.85;
 
 /**
- * initBackground()
- * * Load the saved image, render the layer, wire up controls.
+ * initBackground(savedImage, legacyOpacityValue)
+ * * Render the saved image, wire up controls, sync across pages, and drop
+ *   the obsolete opacity-slider setting once.
  */
-async function initBackground() {
-  const { [BG_IMAGE_KEY]: savedImage } = await chrome.storage.local.get(BG_IMAGE_KEY);
-
+function initBackground(savedImage, legacyOpacityValue) {
   applyBackgroundLayer(savedImage);
   wireBgResetButton();
   wireBgUploadButton();
   wireBgPopover();
   watchBgStorageChanges();
 
-  // One-time cleanup of the obsolete opacity-slider setting
-  chrome.storage.local.remove(BG_OPACITY_KEY_LEGACY);
+  if (legacyOpacityValue !== undefined) {
+    chrome.storage.local.remove(BG_OPACITY_KEY_LEGACY);
+  }
 }
 
 /**
@@ -1442,11 +1732,11 @@ function wireBgPopover() {
  * * Keep the layer in sync when another tab page saves/removes a background.
  */
 function watchBgStorageChanges() {
-  chrome.storage.onChanged.addListener(async (changes, area) => {
+  chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local' || !changes[BG_IMAGE_KEY]) return;
 
-    const { [BG_IMAGE_KEY]: image } = await chrome.storage.local.get(BG_IMAGE_KEY);
-    applyBackgroundLayer(image);
+    // The event already carries the new value — no second storage read
+    applyBackgroundLayer(changes[BG_IMAGE_KEY].newValue);
   });
 }
 
@@ -1466,10 +1756,19 @@ async function init() {
     return;
   }
 
-  await initTheme();
-  await initBackground();
+  // One storage round-trip covers every persisted preference
+  const stored = await chrome.storage.local.get([
+    THEME_KEY,
+    BG_IMAGE_KEY,
+    BG_OPACITY_KEY_LEGACY,
+  ]);
+
+  initTheme(stored[THEME_KEY]);
+  initBackground(stored[BG_IMAGE_KEY], stored[BG_OPACITY_KEY_LEGACY]);
+
   await refreshAll();
   setupNewGroupDropzone();
+  watchBrowserState();
 }
 
 document.addEventListener('DOMContentLoaded', init);

@@ -2,6 +2,34 @@
    TreeTab — New Tab page styles (Tab Groups + Domain Groups)
    ============================================================ */
 
+/* ---- Fonts ----
+   Bundled locally so a new tab page makes no third-party request.
+   Newsreader / DM Sans ship as latin-subset variable fonts.
+   License: SIL Open Font License 1.1 — see fonts/OFL-*.txt */
+@font-face {
+  font-family: 'Newsreader';
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+  src: url('fonts/newsreader.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Newsreader';
+  font-style: italic;
+  font-weight: 200 800;
+  font-display: swap;
+  src: url('fonts/newsreader-italic.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'DM Sans';
+  font-style: normal;
+  font-weight: 100 1000;
+  font-display: swap;
+  src: url('fonts/dm-sans.woff2') format('woff2');
+}
+
 :root {
   /* Sage green theme */
   --ink: #1a2e1a;
@@ -18,6 +46,13 @@
   --card-bg: #ffffff;
   --card-border: #d4e5d8;
   --shadow: rgba(90, 130, 100, 0.08);
+
+  /* Font stacks — the woff2 files live in fonts/ (no third-party requests) */
+  --font-sans: 'DM Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-serif: 'Newsreader', Georgia, 'Times New Roman', serif;
+
+  /* Native scrollbars / form controls follow the active theme */
+  color-scheme: light;
 
   /* RGB tuples for rgba() usage */
   --rgb-ink: 26, 46, 26;
@@ -50,6 +85,7 @@
 
 /* Dark mode */
 [data-theme="dark"] {
+  color-scheme: dark;
   --ink: #e8f0e8;
   --paper: #1a1f1a;
   --warm-gray: #2a3a2a;
@@ -80,8 +116,15 @@
   box-sizing: border-box;
 }
 
+/* Keyboard focus stays visible without boxing in every mouse click */
+:focus-visible {
+  outline: 2px solid var(--accent-sage);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
 body {
-  font-family: 'DM Sans', sans-serif;
+  font-family: var(--font-sans);
   background: var(--paper);
   color: var(--ink);
   min-height: 100vh;
@@ -151,7 +194,7 @@ header {
 }
 
 .header-left h1 {
-  font-family: 'Newsreader', serif;
+  font-family: var(--font-serif);
   font-weight: 300;
   font-size: 28px;
   letter-spacing: -0.5px;
@@ -246,7 +289,7 @@ header {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  font-family: 'DM Sans', sans-serif;
+  font-family: var(--font-sans);
   font-size: 13px;
   font-weight: 600;
   color: var(--ink);
@@ -266,7 +309,7 @@ header {
 }
 
 .bg-remove-btn {
-  font-family: 'DM Sans', sans-serif;
+  font-family: var(--font-sans);
   font-size: 12px;
   font-weight: 500;
   color: var(--status-abandoned);
@@ -358,7 +401,7 @@ body.has-bg-image .last-refresh a {
 }
 
 .section-header h2 {
-  font-family: 'Newsreader', serif;
+  font-family: var(--font-serif);
   font-weight: 400;
   font-size: 18px;
   font-style: italic;
@@ -410,7 +453,7 @@ body.has-bg-image .last-refresh a {
 .tab-cleanup-text strong { font-weight: 600; }
 
 .tab-cleanup-btn {
-  font-family: 'DM Sans', sans-serif;
+  font-family: var(--font-sans);
   font-size: 11px;
   font-weight: 600;
   padding: 6px 14px;
@@ -482,6 +525,7 @@ body.has-bg-image .last-refresh a {
 .group-color-pink { background: var(--group-pink); }
 .group-color-purple { background: var(--group-purple); }
 .group-color-cyan { background: var(--group-cyan); }
+.group-color-ungrouped { background: transparent; border: 2px dashed var(--muted); }
 
 .group-title {
   font-size: 14px;
@@ -559,7 +603,7 @@ body.has-bg-image .last-refresh a {
   border: 2px solid var(--accent-amber);
   border-radius: 4px;
   background: var(--card-bg);
-  font-family: 'DM Sans', sans-serif;
+  font-family: var(--font-sans);
   outline: none;
 }
 
@@ -579,10 +623,23 @@ body.has-bg-image .last-refresh a {
   gap: 8px;
   max-height: 300px;
   overflow-y: auto;
-  scrollbar-width: none;
+  scrollbar-width: thin;
+  scrollbar-color: var(--warm-gray) transparent;
 }
 
-.group-tabs-list::-webkit-scrollbar { display: none; }
+.group-tabs-list::-webkit-scrollbar { width: 8px; }
+.group-tabs-list::-webkit-scrollbar-track { background: transparent; }
+.group-tabs-list::-webkit-scrollbar-thumb {
+  background: var(--warm-gray);
+  border-radius: 4px;
+}
+
+.group-empty-hint {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 10px 4px;
+  text-align: center;
+}
 
 .group-tab-item {
   display: flex;
@@ -651,11 +708,6 @@ body.has-bg-image .last-refresh a {
 }
 
 .group-tab-action svg { width: 12px; height: 12px; }
-
-.group-tab-ungroup:hover {
-  background: rgba(var(--rgb-muted), 0.15);
-  color: var(--accent-amber);
-}
 
 .group-tab-close:hover {
   background: rgba(var(--rgb-rose), 0.1);
@@ -730,7 +782,6 @@ body.has-bg-image .last-refresh a {
   background: var(--warm-gray);
 }
 
-.mission-card.has-active-bar::before { background: var(--status-active); }
 .mission-card.has-amber-bar::before { background: var(--accent-amber); }
 .mission-card.has-neutral-bar::before { background: var(--warm-gray); }
 
@@ -747,7 +798,6 @@ body.has-bg-image .last-refresh a {
 }
 
 .mission-content { min-width: 0; }
-.mission-meta { display: none; }
 
 .mission-top {
   display: flex;
@@ -763,19 +813,6 @@ body.has-bg-image .last-refresh a {
   color: var(--ink);
   letter-spacing: -0.2px;
 }
-
-.mission-tag {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 1px;
-  font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 3px;
-}
-
-.mission-tag.active { color: var(--status-active); background: rgba(var(--rgb-active), 0.08); }
-.mission-tag.cooling { color: var(--status-cooling); background: rgba(var(--rgb-cooling), 0.08); }
-.mission-tag.abandoned { color: var(--status-abandoned); background: rgba(var(--rgb-rose), 0.08); }
 
 .open-tabs-badge {
   display: inline-flex;
@@ -812,6 +849,15 @@ body.has-bg-image .last-refresh a {
 .page-chip:last-child, .page-chip-overflow { border-bottom: none; }
 
 .chip-favicon { width: 16px; height: 16px; flex-shrink: 0; border-radius: 2px; }
+
+/* Pinned tabs are listed but never bulk-closed */
+.chip-pin {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  color: var(--muted);
+  opacity: 0.75;
+}
 
 .chip-text {
   flex: 1;
@@ -866,14 +912,17 @@ body.has-bg-image .last-refresh a {
   color: var(--muted);
   padding: 6px 4px;
   cursor: pointer;
+  font-weight: 500;
 }
+
+.page-chip-overflow:hover { color: var(--accent-sage); }
 
 /* Actions */
 .actions { display: flex; gap: 8px; margin-top: 10px; }
 
 .action-btn {
   font-size: 11px;
-  font-family: 'DM Sans', sans-serif;
+  font-family: var(--font-sans);
   font-weight: 500;
   padding: 5px 14px;
   border-radius: 4px;
@@ -889,6 +938,13 @@ body.has-bg-image .last-refresh a {
 
 .action-btn:hover { border-color: var(--ink); color: var(--ink); }
 .action-btn svg { width: 12px; height: 12px; }
+
+/* Armed state of a bulk-close button — the next click confirms */
+.action-btn.confirming {
+  border-color: var(--accent-rose);
+  color: var(--accent-rose);
+  background: rgba(var(--rgb-rose), 0.08);
+}
 
 .action-btn.primary { background: var(--ink); color: var(--paper); border-color: var(--ink); }
 .action-btn.primary:hover { opacity: 0.85; }
@@ -930,7 +986,7 @@ body.has-bg-image .last-refresh a {
 .empty-checkmark svg { width: 26px; height: 26px; color: var(--accent-sage); stroke-width: 2.5; }
 
 .empty-title {
-  font-family: 'Newsreader', serif;
+  font-family: var(--font-serif);
   font-size: 20px;
   font-weight: 400;
   font-style: italic;
@@ -958,7 +1014,7 @@ footer {
 .stat { text-align: center; display: flex; flex-direction: column; align-items: center; gap: 6px; }
 
 .stat-num {
-  font-family: 'Newsreader', serif;
+  font-family: var(--font-serif);
   font-size: 28px;
   font-weight: 300;
   color: var(--ink);
@@ -998,7 +1054,7 @@ footer {
   transform: translateX(-50%) translateY(80px);
   background: var(--ink);
   color: var(--paper);
-  font-family: 'DM Sans', sans-serif;
+  font-family: var(--font-sans);
   font-size: 13px;
   font-weight: 500;
   padding: 12px 24px;

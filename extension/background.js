@@ -62,30 +62,36 @@ async function updateBadge() {
 
 // ─── Event listeners ──────────────────────────────────────────────────────────
 
+// A page load fires many onUpdated events in a row; coalesce them so the
+// service worker queries tabs once per burst instead of once per event.
+const BADGE_DEBOUNCE_MS = 300;
+let badgeTimer = null;
+
+/**
+ * scheduleBadgeUpdate()
+ *
+ * Debounced updateBadge() — the badge only needs to show the count once a
+ * burst of tab events has settled.
+ */
+function scheduleBadgeUpdate() {
+  clearTimeout(badgeTimer);
+  badgeTimer = setTimeout(updateBadge, BADGE_DEBOUNCE_MS);
+}
+
 // Update badge when the extension is first installed
-chrome.runtime.onInstalled.addListener(() => {
-  updateBadge();
-});
+chrome.runtime.onInstalled.addListener(scheduleBadgeUpdate);
 
 // Update badge when Chrome starts up
-chrome.runtime.onStartup.addListener(() => {
-  updateBadge();
-});
+chrome.runtime.onStartup.addListener(scheduleBadgeUpdate);
 
 // Update badge whenever a tab is opened
-chrome.tabs.onCreated.addListener(() => {
-  updateBadge();
-});
+chrome.tabs.onCreated.addListener(scheduleBadgeUpdate);
 
 // Update badge whenever a tab is closed
-chrome.tabs.onRemoved.addListener(() => {
-  updateBadge();
-});
+chrome.tabs.onRemoved.addListener(scheduleBadgeUpdate);
 
 // Update badge when a tab's URL changes (e.g. navigating to/from chrome://)
-chrome.tabs.onUpdated.addListener(() => {
-  updateBadge();
-});
+chrome.tabs.onUpdated.addListener(scheduleBadgeUpdate);
 
 // ─── Initial run ─────────────────────────────────────────────────────────────
 
