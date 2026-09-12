@@ -32,6 +32,12 @@ const REFRESH_DEBOUNCE_MS = 300;
 /** How long a bulk-close button stays armed waiting for its second click */
 const CONFIRM_TIMEOUT_MS = 3000;
 
+/** Rendering budget per slice: past this a task counts as a long task */
+const SLICE_BUDGET_MS = 50;
+
+/** Confetti particles per close animation */
+const CONFETTI_PARTICLES = 12;
+
 /** Shown when a tab reports no favicon — keeps the page free of third-party requests */
 const FALLBACK_FAVICON = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6.25' fill='none' stroke='%237db9a8' stroke-width='1.5' opacity='0.55'/%3E%3Ccircle cx='8' cy='8' r='2.25' fill='%237db9a8' opacity='0.45'/%3E%3C/svg%3E";
 
@@ -119,6 +125,7 @@ let refreshQueued = false;
 let refreshInFlight = false;
 let toastTimer = null;
 let confirmTimer = null;
+let greetingTimer = null;
 let audioContext = null;
 
 // ================================================================
@@ -159,6 +166,42 @@ function faviconFor(tab) {
  */
 function visibleTabsOf(uniqueTabs, key) {
   return expandedCards.has(key) ? uniqueTabs : uniqueTabs.slice(0, CHIP_LIMIT);
+}
+
+// ================================================================
+// Main-thread slicing
+// ================================================================
+
+/**
+ * yieldToMainThread()
+ * * Hand the main thread back so input and paint can run. scheduler.yield()
+ *   keeps the continuation ahead of other queued work; setTimeout(0) is the
+ *   fallback for engines without the Scheduler API.
+ */
+function yieldToMainThread() {
+  if (typeof scheduler !== 'undefined' && typeof scheduler.yield === 'function') {
+    return scheduler.yield();
+  }
+  return new Promise(resolve => setTimeout(resolve, 0));
+}
+
+/**
+ * runInSlices(items, fn)
+ * * Run fn(item) over every item, yielding whenever a slice has burned its
+ *   budget. A board with hundreds of tabs must never block the main thread
+ *   for a whole render pass.
+ */
+async function runInSlices(items, fn) {
+  let deadline = performance.now() + SLICE_BUDGET_MS;
+
+  for (const item of items) {
+    await fn(item);
+
+    if (performance.now() >= deadline) {
+      await yieldToMainThread();
+      deadline = performance.now() + SLICE_BUDGET_MS;
+    }
+  }
 }
 
 // ================================================================
@@ -208,7 +251,7 @@ async function fetchData() {
 // Tab Groups rendering (top section)
 // ================================================================
 
-function renderGroups() {
+async function renderGroups() {
   const container = document.getElementById('groupsContainer');
   const countEl = document.getElementById('groupsCount');
   const section = document.getElementById('groupsSection');
@@ -235,16 +278,21 @@ function renderGroups() {
   }
   if (section) section.style.display = 'block';
 
-  // Render each group
-  for (const group of activeGroups) {
+  // Render each group, yielding between slices on a big board. The remembered
+  // scroll offset is written straight after a card lands in the document —
+  // a detached element has no box and would drop the write.
+  await runInSlices(activeGroups, group => {
     const groupCard = createGroupCard(group, groupTabsMap[group.id]);
     container.appendChild(groupCard);
-  }
+    restoreCardScroll(groupCard, String(group.id));
+  });
 
   // Always rendered once groups exist: it is the only drop target for dragging
   // a tab back out of a group.
   const ungroupedTabs = allTabs.filter(t => !t.groupId || t.groupId === -1);
-  container.appendChild(createUngroupedCard(ungroupedTabs));
+  const ungroupedCard = createUngroupedCard(ungroupedTabs);
+  container.appendChild(ungroupedCard);
+  restoreCardScroll(ungroupedCard, 'ungrouped');
 }
 
 function createGroupCard(group, tabs) {
@@ -299,6 +347,9 @@ function createGroupCard(group, tabs) {
     );
   });
 
+  // A live refresh can rebuild this card mid-confirmation; keep the armed look
+  reapplyArmedConfirm(card);
+
   return card;
 }
 
@@ -347,16 +398,16 @@ function createUngroupedCard(tabs) {
 
 /**
  * createOverflowChip(key, label, action)
- * * The "+N more" / "Show less" row that folds long card lists.
+ * * The "+N more" / "Show less" row that folds long card lists. A real
+ *   button, so Enter and Space work without any key handling.
  */
 function createOverflowChip(key, label, action = 'expand-chips') {
-  const el = document.createElement('div');
+  const el = document.createElement('button');
+  el.type = 'button';
   el.className = 'page-chip page-chip-overflow';
   el.dataset.action = action;
   el.dataset.cardKey = key;
   el.textContent = label;
-  el.setAttribute('role', 'button');
-  el.setAttribute('tabindex', '0');
   el.setAttribute('aria-expanded', String(action === 'collapse-chips'));
   return el;
 }
@@ -371,7 +422,7 @@ function createGroupTabElement(tab) {
   const title = getCustomTitle(rawTitle, tab.url);
 
   el.innerHTML = `
-    <img class="group-tab-favicon" src="${escapeHtml(faviconFor(tab))}" alt="">
+    <img class="group-tab-favicon" src="${escapeHtml(faviconFor(tab))}" alt="" loading="lazy" decoding="async">
     <div class="group-tab-title"${hasCJK(title) ? ' lang="zh-CN"' : ''} title="${escapeHtml(title)}">${escapeHtml(title)}</div>
     <div class="group-tab-actions">
       <button class="group-tab-action group-tab-close" data-tab-id="${tab.id}" title="Close tab" aria-label="Close tab">
@@ -749,7 +800,7 @@ function formatCamelCase(str) {
   return translated.join('');
 }
 
-function renderDomains() {
+async function renderDomains() {
   const container = document.getElementById('domainsMissions');
   const countEl = document.getElementById('domainsCount');
   const section = document.getElementById('domainsSection');
@@ -773,16 +824,55 @@ function renderDomains() {
   if (dropzone) dropzone.style.display = '';
   if (countEl) countEl.textContent = `${domainGroups.length} domains`;
 
-  for (const group of domainGroups) {
-    const card = createDomainCard(group);
-    container.appendChild(card);
-  }
+  // One card per slice budget, so a hundred domains cannot freeze the page
+  await runInSlices(domainGroups, group => {
+    container.appendChild(createDomainCard(group));
+  });
 
-  // Chips are rebuilt on every render, so re-attach their drag handlers
-  container.querySelectorAll('.page-chip[draggable="true"]').forEach(chip => {
+  attachChipDrag(container);
+}
+
+/**
+ * attachChipDrag(root)
+ * * Chips are rebuilt on every render, so their drag handlers are attached
+ *   per card instead of delegated.
+ */
+function attachChipDrag(root) {
+  root.querySelectorAll('.page-chip[draggable="true"]').forEach(chip => {
     chip.addEventListener('dragstart', handleDragStart);
     chip.addEventListener('dragend', handleDragEnd);
   });
+}
+
+/**
+ * rerenderCard(key, actionEl)
+ * * Rebuild only the card whose fold state changed. A full render pass would
+ *   rebuild every card and throw focus away; this keeps the click cheap and
+ *   hands focus back to the card's fold control.
+ */
+function rerenderCard(key, actionEl) {
+  const card = actionEl.closest('.mission-card, .group-card');
+  if (!card) return;
+
+  const isDomainCard = card.classList.contains('mission-card');
+  const group = isDomainCard ? domainGroups.find(g => g.domain === key) : null;
+  if (isDomainCard && !group) return;
+
+  const oldList = card.querySelector('.group-tabs-list');
+  const scrollTop = oldList ? oldList.scrollTop : 0;
+
+  const fresh = isDomainCard
+    ? createDomainCard(group)
+    : createUngroupedCard(allTabs.filter(t => !t.groupId || t.groupId === -1));
+
+  card.replaceWith(fresh);
+  attachChipDrag(fresh);
+
+  const freshList = fresh.querySelector('.group-tabs-list');
+  if (freshList && scrollTop) freshList.scrollTop = scrollTop;
+
+  const foldToggle = fresh.querySelector('.page-chip-overflow');
+  if (foldToggle) foldToggle.focus();
 }
 
 /**
@@ -828,10 +918,12 @@ function createDomainCard(group) {
   </span>`;
 
   if (hasDupes) {
-    badgesHtml += `<span class="open-tabs-badge" style="color:var(--accent-amber);background:rgba(200,113,58,0.08);">${totalExtras} duplicates</span>`;
+    badgesHtml += `<span class="open-tabs-badge">${totalExtras} duplicates</span>`;
   }
 
-  // Tab chips — one per URL, duplicates collapse into a "(2x)" tag
+  // Tab chips — one per URL, duplicates collapse into a "(2x)" tag.
+  // The row is a list item and both of its controls are real buttons:
+  // a button nested inside a role="button" row breaks the accessible name.
   const seen = new Set();
   const uniqueTabs = tabs.filter(t => {
     if (seen.has(t.url)) return false;
@@ -850,29 +942,22 @@ function createDomainCard(group) {
     const chipClass = count > 1 ? 'chip-has-dupes' : '';
     const pin = tab.pinned ? `<svg class="chip-pin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 3.75h7.5m-5.25 0v5.25L8.25 11.25v1.5h7.5v-1.5L13.5 9V3.75M12 12.75v7.5" /></svg>` : '';
 
-    return `<div class="page-chip clickable ${chipClass}"
+    return `<li class="page-chip clickable ${chipClass}"
       draggable="true"
       data-tab-id="${tab.id}"
-      data-action="focus-tab"
-      role="button"
-      tabindex="0"
       ${hasCJK(label) ? 'lang="zh-CN"' : ''}
       title="${escapeHtml(label)}">
-      ${pin}<img class="chip-favicon" src="${escapeHtml(faviconFor(tab))}" alt="">
-      <span class="chip-text">${escapeHtml(label)}</span>${dupeTag}
+      <button type="button" class="chip-open" data-action="focus-tab" data-tab-id="${tab.id}">
+        ${pin}<img class="chip-favicon" src="${escapeHtml(faviconFor(tab))}" alt="" loading="lazy" decoding="async">
+        <span class="chip-text">${escapeHtml(label)}</span>${dupeTag}
+      </button>
       <div class="chip-actions">
         <button class="chip-action chip-close" data-action="close-single-tab" data-tab-id="${tab.id}" title="Close tab" aria-label="Close tab">
           <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
         </button>
       </div>
-    </div>`;
+    </li>`;
   }).join('');
-
-  if (hiddenCount > 0) {
-    chipsHtml += `<div class="page-chip page-chip-overflow" data-action="expand-chips" data-card-key="${escapeHtml(group.domain)}" role="button" tabindex="0">+${hiddenCount} more</div>`;
-  } else if (visibleTabs.length > CHIP_LIMIT) {
-    chipsHtml += `<div class="page-chip page-chip-overflow" data-action="collapse-chips" data-card-key="${escapeHtml(group.domain)}" role="button" tabindex="0">Show less</div>`;
-  }
 
   // Action buttons
   let actionsHtml = '';
@@ -894,18 +979,20 @@ function createDomainCard(group) {
         <span class="mission-name">${escapeHtml(isLanding ? 'Homepages' : friendlyDomain(group.domain))}</span>
         ${badgesHtml}
       </div>
-      <div class="mission-pages">${chipsHtml}</div>
+      <ul class="mission-pages">${chipsHtml}</ul>
       <div class="actions">${actionsHtml}</div>
     </div>
   `;
 
-  // The board re-renders on every browser event, so re-arm the button the user
-  // just clicked instead of silently losing the confirmation mid-flight.
-  if (armedConfirm && Date.now() < armedConfirm.expiresAt) {
-    const armed = [...card.querySelectorAll('.action-btn')]
-      .find(el => confirmKey(el) === armedConfirm.key);
-    if (armed) applyConfirmVisual(armed, armedConfirm.label);
+  const pagesList = card.querySelector('.mission-pages');
+  if (hiddenCount > 0) {
+    pagesList.appendChild(createOverflowChip(group.domain, `+${hiddenCount} more`));
+  } else if (visibleTabs.length > CHIP_LIMIT) {
+    pagesList.appendChild(createOverflowChip(group.domain, 'Show less', 'collapse-chips'));
   }
+
+  // A live refresh can rebuild this card mid-confirmation; keep the armed look
+  reapplyArmedConfirm(card);
 
   return card;
 }
@@ -965,56 +1052,69 @@ function playCloseSound() {
   }
 }
 
+/**
+ * shootConfetti(x, y)
+ * * One-shot particle burst at a point on screen. A single rAF loop drives
+ *   every particle — twelve loops meant twelve callbacks competing for the
+ *   same frame — and the whole effect is skipped when motion is not wanted.
+ */
 function shootConfetti(x, y) {
-  const colors = ['#c8713a', '#5a7a62', '#5a6b7a', '#b35a5a', '#d4b896'];
-  const particleCount = 12;
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
 
-  for (let i = 0; i < particleCount; i++) {
+  const colors = ['#a85a2a', '#5a7a62', '#5a6b7a', '#b35a5a', '#d4b896'];
+  const particles = [];
+
+  for (let i = 0; i < CONFETTI_PARTICLES; i++) {
     const el = document.createElement('div');
     const size = 5 + Math.random() * 6;
-    const color = colors[Math.floor(Math.random() * colors.length)];
 
-    el.style.cssText = `
-      position: fixed;
-      left: ${x}px;
-      top: ${y}px;
-      width: ${size}px;
-      height: ${size}px;
-      background: ${color};
-      border-radius: ${Math.random() > 0.5 ? '50%' : '2px'};
-      pointer-events: none;
-      z-index: 200; /* --z-confetti */
-      transform: translate(-50%, -50%);
-    `;
+    el.className = 'confetti-particle';
+    el.style.left = `${x}px`;
+    el.style.top = `${y}px`;
+    el.style.width = `${size}px`;
+    el.style.height = `${size}px`;
+    el.style.background = colors[Math.floor(Math.random() * colors.length)];
+    el.style.borderRadius = Math.random() > 0.5 ? '50%' : '2px';
     document.body.appendChild(el);
 
     const angle = Math.random() * Math.PI * 2;
     const speed = 60 + Math.random() * 100;
-    const vx = Math.cos(angle) * speed;
-    const vy = Math.sin(angle) * speed - 60;
-    const gravity = 200;
 
-    const startTime = performance.now();
-    const duration = 600 + Math.random() * 200;
+    particles.push({
+      el,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed - 60,
+      duration: 600 + Math.random() * 200,
+      startTime: performance.now(),
+    });
+  }
 
-    function frame(now) {
-      const elapsed = (now - startTime) / 1000;
-      const progress = elapsed / (duration / 1000);
+  const gravity = 200;
 
-      if (progress >= 1) { el.remove(); return; }
+  function frame(now) {
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      const elapsed = (now - p.startTime) / 1000;
+      const progress = elapsed / (p.duration / 1000);
 
-      const px = vx * elapsed;
-      const py = vy * elapsed + 0.5 * gravity * elapsed * elapsed;
+      if (progress >= 1) {
+        p.el.remove();
+        particles.splice(i, 1);
+        continue;
+      }
+
+      const px = p.vx * elapsed;
+      const py = p.vy * elapsed + 0.5 * gravity * elapsed * elapsed;
       const opacity = progress < 0.5 ? 1 : 1 - (progress - 0.5) * 2;
 
-      el.style.transform = `translate(calc(-50% + ${px}px), calc(-50% + ${py}px))`;
-      el.style.opacity = opacity;
-
-      requestAnimationFrame(frame);
+      p.el.style.transform = `translate(calc(-50% + ${px}px), calc(-50% + ${py}px))`;
+      p.el.style.opacity = opacity;
     }
 
-    requestAnimationFrame(frame);
+    if (particles.length > 0) requestAnimationFrame(frame);
   }
+
+  requestAnimationFrame(frame);
 }
 
 /**
@@ -1056,13 +1156,12 @@ document.addEventListener('click', async (e) => {
 
   const action = actionEl.dataset.action;
 
-  // Fold / unfold a long card list
+  // Fold / unfold a long card list — only the clicked card is rebuilt
   if (action === 'expand-chips' || action === 'collapse-chips') {
     const key = actionEl.dataset.cardKey;
     if (action === 'expand-chips') expandedCards.add(key);
     else expandedCards.delete(key);
-    renderDomains();
-    renderGroups();
+    rerenderCard(key, actionEl);
     return;
   }
 
@@ -1114,16 +1213,17 @@ document.addEventListener('click', async (e) => {
     return;
   }
 
-  // Delete group (both group and tabs)
+  // Delete group (both group and tabs) — bulk, so it asks twice
   if (action === 'delete-group') {
     const groupId = parseInt(actionEl.dataset.groupId, 10);
-    if (groupId) {
-      const group = allGroups.find(g => g.id === groupId);
-      const groupTabs = allTabs.filter(t => t.groupId === groupId);
-      if (confirm(`Delete group "${group?.title || 'Untitled'}"?\n\n${groupTabs.length} tabs will be closed and the group will be removed.`)) {
-        await deleteGroup(groupId);
-      }
-    }
+    if (!groupId) return;
+
+    const groupTabs = allTabs.filter(t => t.groupId === groupId);
+    if (groupTabs.length === 0) return;
+
+    if (needsConfirm(actionEl, `Confirm: close ${groupTabs.length} tabs`)) return;
+
+    await deleteGroup(groupId);
     return;
   }
 
@@ -1185,14 +1285,40 @@ document.addEventListener('click', async (e) => {
   }
 });
 
-// Enter / Space activate the [data-action] elements that are not buttons
-// (page chips, "+N more" rows) so the board is keyboard-operable.
-document.addEventListener('keydown', (e) => {
-  if (e.key !== 'Enter' && e.key !== ' ') return;
-  if (!e.target?.closest) return;
+/**
+ * actionTargetFor(event)
+ * * The [data-action] element a key event is aimed at — but only when it is
+ *   not a real button, since those handle Enter and Space natively.
+ */
+function actionTargetFor(event) {
+  if (!event.target?.closest) return null;
 
-  const el = e.target.closest('[data-action]');
-  if (!el || el.tagName === 'BUTTON' || e.target !== el) return;
+  const el = event.target.closest('[data-action]');
+  if (!el || el.tagName === 'BUTTON' || event.target !== el) return null;
+
+  return el;
+}
+
+// Keyboard activation for any [data-action] element that is not a native
+// button: Enter fires on keydown, Space on keyup — the same contract a real
+// <button> follows.
+document.addEventListener('keydown', (e) => {
+  const el = actionTargetFor(e);
+  if (!el) return;
+
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    el.click();
+  } else if (e.key === ' ') {
+    e.preventDefault();  // no page scroll; the activation happens on keyup
+  }
+});
+
+document.addEventListener('keyup', (e) => {
+  if (e.key !== ' ') return;
+
+  const el = actionTargetFor(e);
+  if (!el) return;
 
   e.preventDefault();
   el.click();
@@ -1210,46 +1336,44 @@ document.addEventListener('error', (e) => {
 
 /**
  * showToast(message)
- * * Transient status line. The previous timer is cleared first so
- *   back-to-back messages each get their full time on screen.
+ * * Transient status line, shown as a manual popover — the top layer means no
+ *   stacking-context games. The previous timer is cleared first so back-to-back
+ *   messages each get their full time on screen. The popover is shown before
+ *   the text is written, so the live region is rendered when it changes.
  */
 function showToast(message) {
   const toast = document.getElementById('toast');
   const toastText = document.getElementById('toastText');
   if (!toast || !toastText) return;
 
+  toast.showPopover?.();
   toastText.textContent = message;
-  toast.classList.add('visible');
 
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => toast.classList.remove('visible'), 2500);
+  toastTimer = setTimeout(() => toast.hidePopover?.(), 2500);
 }
 
 /**
  * updateTabCountBadge(count)
- * * Update footer badge color based on tab count
- * * 1-10: green, 11-20: amber, 21+: red
+ * * Footer badge for the tab count. The dot only conveys its meaning through
+ *   colour, so the tier label rides along as its accessible name.
+ *   Tiers live in shared.js — the same table colours the toolbar badge.
  */
 function updateTabCountBadge(count) {
   const badge = document.getElementById('statBadge');
   if (!badge) return;
 
-  badge.classList.remove('green', 'amber', 'red');
+  const tier = tabLoadTier(count);
 
-  if (count <= 10) {
-    badge.classList.add('green');
-  } else if (count <= 20) {
-    badge.classList.add('amber');
-  } else {
-    badge.classList.add('red');
-  }
+  badge.classList.remove('green', 'amber', 'red');
+  badge.classList.add(tier.level);
+  badge.setAttribute('aria-label', `Tab load: ${tier.label}`);
 }
 
 function getGreeting() {
   const hour = new Date().getHours();
   if (hour < 6) return 'Good night';
   if (hour < 12) return 'Good morning';
-  if (hour < 14) return 'Good afternoon';
   if (hour < 18) return 'Good afternoon';
   return 'Good evening';
 }
@@ -1257,6 +1381,33 @@ function getGreeting() {
 function getDateDisplay() {
   return new Date().toLocaleDateString('en-US', {
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+  });
+}
+
+/**
+ * renderGreeting()
+ * * Paint the greeting and date, then re-arm for the next local midnight — a
+ *   new tab page stays open for days, so a one-shot paint goes stale.
+ */
+function renderGreeting() {
+  document.getElementById('greeting').textContent = getGreeting();
+  document.getElementById('dateDisplay').textContent = getDateDisplay();
+
+  const now = new Date();
+  const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+
+  clearTimeout(greetingTimer);
+  greetingTimer = setTimeout(renderGreeting, nextMidnight - now + 1000);
+}
+
+/**
+ * watchGreeting()
+ * * A hidden page's timers can be delayed arbitrarily, so re-check whenever
+ *   the page comes back to the foreground.
+ */
+function watchGreeting() {
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) renderGreeting();
   });
 }
 
@@ -1294,9 +1445,8 @@ async function refreshAll() {
   try {
     captureScrollPositions();
     await fetchData();
-    renderDomains();  // Render domain groups first
-    renderGroups();   // Then render tab groups
-    restoreScrollPositions();
+    await renderDomains();  // Render domain groups first
+    await renderGroups();   // Then render tab groups
     checkTabOutDupes();
   } catch (err) {
     // A reloaded/unloaded extension leaves this page with no chrome.* APIs:
@@ -1379,9 +1529,11 @@ function watchBrowserState() {
 }
 
 /**
- * captureScrollPositions() / restoreScrollPositions()
+ * captureScrollPositions() / restoreCardScroll()
  * * A re-render replaces every card and would reset each group's scroll
  *   offset; remember them so live refreshes do not jump the user around.
+ *   Only the capture reads layout — the restore writes to the card the render
+ *   just created, so there is no second read pass.
  */
 function captureScrollPositions() {
   cardScrollPositions.clear();
@@ -1394,16 +1546,17 @@ function captureScrollPositions() {
   });
 }
 
-function restoreScrollPositions() {
-  if (cardScrollPositions.size === 0) return;
+/**
+ * restoreCardScroll(card, key)
+ * * Re-apply a remembered offset to a card that is already in the document:
+ *   a detached element has no box, so the write would be dropped.
+ */
+function restoreCardScroll(card, key) {
+  const offset = cardScrollPositions.get(key);
+  if (!offset) return;
 
-  document.querySelectorAll('.group-card[data-group-id]').forEach(card => {
-    const offset = cardScrollPositions.get(card.dataset.groupId);
-    if (!offset) return;
-
-    const list = card.querySelector('.group-tabs-list');
-    if (list) list.scrollTop = offset;
-  });
+  const list = card.querySelector('.group-tabs-list');
+  if (list) list.scrollTop = offset;
 }
 
 // ================================================================
@@ -1452,22 +1605,57 @@ let armedConfirm = null;
  *   innerHTML on every browser event, so the DOM node cannot hold the state.
  */
 function confirmKey(el) {
-  return `${el.dataset.action}::${el.dataset.domain || ''}`;
+  return `${el.dataset.action}::${el.dataset.domain || el.dataset.groupId || ''}`;
 }
 
 /**
  * applyConfirmVisual(el, label)
  * * Paint the armed look on a button, or clear it when label is falsy.
+ *   Icon-only buttons (the group delete) have no text to swap, so their icon
+ *   is parked in dataset.restingHtml and the accessible name is swapped along
+ *   with the visible label.
  */
 function applyConfirmVisual(el, label) {
   if (label) {
-    el.dataset.restingLabel = el.textContent;
+    if (el.textContent.trim() === '') {
+      el.dataset.restingHtml = el.innerHTML;
+      el.dataset.restingName = el.getAttribute('aria-label') || '';
+      el.setAttribute('aria-label', label);
+    } else if (el.dataset.restingLabel === undefined) {
+      // Only the first arm captures the resting text: re-arming an expired
+      // button on the same node must not remember the confirm label as it.
+      el.dataset.restingLabel = el.textContent;
+    }
+
     el.textContent = label;
     el.classList.add('confirming');
+    return;
+  }
+
+  if (el.dataset.restingHtml !== undefined) {
+    el.innerHTML = el.dataset.restingHtml;
+    el.setAttribute('aria-label', el.dataset.restingName || '');
+    delete el.dataset.restingHtml;
+    delete el.dataset.restingName;
   } else {
     el.textContent = el.dataset.restingLabel || el.textContent;
-    el.classList.remove('confirming');
   }
+
+  el.classList.remove('confirming');
+}
+
+/**
+ * reapplyArmedConfirm(root)
+ * * A card rebuilt while a confirmation is in flight has to paint the armed
+ *   look again: the module state survives the re-render, the DOM does not.
+ */
+function reapplyArmedConfirm(root) {
+  if (!armedConfirm || Date.now() >= armedConfirm.expiresAt) return;
+
+  const armed = [...root.querySelectorAll('.action-btn, .group-action-btn')]
+    .find(el => confirmKey(el) === armedConfirm.key);
+
+  if (armed) applyConfirmVisual(armed, armedConfirm.label);
 }
 
 /**
@@ -1646,7 +1834,6 @@ function initBackground(savedImage, legacyOpacityValue) {
   applyBackgroundLayer(savedImage);
   wireBgResetButton();
   wireBgUploadButton();
-  wireBgPopover();
   watchBgStorageChanges();
 
   if (legacyOpacityValue !== undefined) {
@@ -1772,44 +1959,13 @@ function wireBgResetButton() {
 
 /**
  * closeBgPopover()
- * * Hide the background settings panel and reset its button state.
+ * * Hide the background settings popover. Opening it, light dismiss and Escape
+ *   all belong to the browser now; this is only for closing it
+ *   programmatically once the image has been saved or removed.
  */
 function closeBgPopover() {
-  const btn = document.getElementById('bgToggleBtn');
   const popover = document.getElementById('bgPopover');
-  if (!btn || !popover) return;
-
-  popover.hidden = true;
-  btn.classList.remove('active');
-  btn.setAttribute('aria-expanded', 'false');
-}
-
-/**
- * wireBgPopover()
- * * Open/close the settings popover; dismiss on outside click or Escape.
- */
-function wireBgPopover() {
-  const btn = document.getElementById('bgToggleBtn');
-  const popover = document.getElementById('bgPopover');
-
-  if (!btn || !popover) return;
-
-  btn.addEventListener('click', () => {
-    const willOpen = popover.hidden;
-    popover.hidden = !willOpen;
-    btn.classList.toggle('active', willOpen);
-    btn.setAttribute('aria-expanded', String(willOpen));
-  });
-
-  document.addEventListener('click', (e) => {
-    if (!popover.hidden && !popover.contains(e.target) && !btn.contains(e.target)) {
-      closeBgPopover();
-    }
-  });
-
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeBgPopover();
-  });
+  popover?.hidePopover?.();
 }
 
 /**
@@ -1830,8 +1986,8 @@ function watchBgStorageChanges() {
 // ================================================================
 
 async function init() {
-  document.getElementById('greeting').textContent = getGreeting();
-  document.getElementById('dateDisplay').textContent = getDateDisplay();
+  renderGreeting();
+  watchGreeting();
 
   if (!extensionApiAvailable()) {
     // Stale context without chrome APIs: re-enter the extension once,

@@ -7,11 +7,12 @@
  * Since we no longer have a server, we query chrome.tabs directly.
  * The badge counts real web tabs (skipping chrome:// and extension pages).
  *
- * Color coding gives a quick at-a-glance health signal:
- *   Green  (#5a9a7a) → 1–10 tabs  (focused, manageable)
- *   Amber  (#b8a85e) → 11–20 tabs (getting busy)
- *   Red    (#b35a5a) → 21+ tabs   (time to cull!)
+ * The colour coding comes from TAB_LOAD_TIERS in shared.js, which the new tab
+ * page's footer badge reads as well — one tier table, two badges.
  */
+
+// Shared tier table (classic worker: importScripts is available at the top level)
+importScripts('shared.js');
 
 // ─── Badge updater ────────────────────────────────────────────────────────────
 
@@ -42,17 +43,8 @@ async function updateBadge() {
 
     if (count === 0) return;
 
-    // Pick badge color based on workload level
-    let color;
-    if (count <= 10) {
-      color = '#5a9a7a'; // Green — you're in control
-    } else if (count <= 20) {
-      color = '#b8a85e'; // Amber — things are piling up
-    } else {
-      color = '#b35a5a'; // Red — time to focus and close some tabs
-    }
-
-    await chrome.action.setBadgeBackgroundColor({ color });
+    // Workload colour comes from the shared tier table
+    await chrome.action.setBadgeBackgroundColor({ color: tabLoadTier(count).color });
 
   } catch {
     // If something goes wrong, clear the badge rather than show stale data
