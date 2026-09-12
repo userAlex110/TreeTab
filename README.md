@@ -4,7 +4,7 @@
 
 > 这是一个**玩儿的项目**（playground）——用 AI 编码工具边玩边写的 Chrome 扩展，功能以自己够用为准，不承诺长期维护。
 
-![TreeTab 新标签页看板](screenshot.png)
+![TreeTab 新标签页看板](screenshot.webp)
 
 ## 它做什么
 
