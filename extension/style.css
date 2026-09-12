@@ -555,7 +555,8 @@ body.has-bg-image .last-refresh a {
   transition: opacity 0.2s;
 }
 
-.group-card:hover .group-actions {
+.group-card:hover .group-actions,
+.group-card:focus-within .group-actions {
   opacity: 1;
 }
 
@@ -690,7 +691,8 @@ body.has-bg-image .last-refresh a {
   flex-shrink: 0;
 }
 
-.group-tab-item:hover .group-tab-actions { opacity: 1; }
+.group-tab-item:hover .group-tab-actions,
+.group-tab-item:focus-within .group-tab-actions { opacity: 1; }
 
 .group-tab-action {
   width: 18px;

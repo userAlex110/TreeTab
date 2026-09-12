@@ -3,7 +3,7 @@
   "name": "TreeTab",
   "version": "1.2.0",
   "description": "TreeTab - 标签组看板，以看板形式管理你的浏览器标签页",
-  "permissions": ["tabs", "activeTab", "storage", "tabGroups"],
+  "permissions": ["tabs", "storage", "tabGroups"],
   "chrome_url_overrides": { "newtab": "index.html" },
   "background": { "service_worker": "background.js" },
   "action": {
@@ -18,11 +18,5 @@
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
-  },
-  "web_accessible_resources": [
-    {
-      "resources": ["icons/icon.svg"],
-      "matches": ["<all_urls>"]
-    }
-  ]
+  }
 }

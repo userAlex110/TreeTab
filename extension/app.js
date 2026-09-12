@@ -135,6 +135,15 @@ function escapeHtml(value) {
 }
 
 /**
+ * hasCJK(value)
+ * * True when a title carries CJK text. The UI is English, so such titles are
+ *   tagged lang="zh-CN" at render to keep screen readers pronouncing them right.
+ */
+function hasCJK(value) {
+  return /[\u3400-\u9fff]/.test(value || '');
+}
+
+/**
  * faviconFor(tab)
  * * Icons come from the tab itself: no favicon service request, so the page
  *   stays local and icons render offline.
@@ -245,7 +254,7 @@ function createGroupCard(group, tabs) {
   const header = document.createElement('div');
   header.className = 'group-header';
   header.innerHTML = `
-    <div class="group-color group-color-${group.color}"></div>
+    <div class="group-color group-color-${escapeHtml(group.color)}"></div>
     <div class="group-title" data-group-id="${group.id}">${escapeHtml(group.title || 'Unnamed Group')}</div>
     <div class="group-actions">
       <button class="group-action-btn group-edit-btn" data-action="edit-group-name" data-group-id="${group.id}" title="Rename" aria-label="Rename group">
@@ -345,6 +354,9 @@ function createOverflowChip(key, label, action = 'expand-chips') {
   el.dataset.action = action;
   el.dataset.cardKey = key;
   el.textContent = label;
+  el.setAttribute('role', 'button');
+  el.setAttribute('tabindex', '0');
+  el.setAttribute('aria-expanded', String(action === 'collapse-chips'));
   return el;
 }
 
@@ -359,7 +371,7 @@ function createGroupTabElement(tab) {
 
   el.innerHTML = `
     <img class="group-tab-favicon" src="${escapeHtml(faviconFor(tab))}" alt="">
-    <div class="group-tab-title" title="${escapeHtml(title)}">${escapeHtml(title)}</div>
+    <div class="group-tab-title"${hasCJK(title) ? ' lang="zh-CN"' : ''} title="${escapeHtml(title)}">${escapeHtml(title)}</div>
     <div class="group-tab-actions">
       <button class="group-tab-action group-tab-close" data-tab-id="${tab.id}" title="Close tab" aria-label="Close tab">
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor">
@@ -596,7 +608,7 @@ function isLandingPage(url) {
 }
 
 function organizeByDomain(tabs) {
-  const groupMap = {};
+  const groupMap = Object.create(null);
   const landingTabs = [];
 
   for (const tab of tabs) {
@@ -792,7 +804,7 @@ function createDomainCard(group) {
   // Pinned tabs are listed, but no bulk action ever closes them
   const closableTabs = tabs.filter(t => !t.pinned);
 
-  const urlCounts = {};
+  const urlCounts = Object.create(null);
   for (const tab of closableTabs) urlCounts[tab.url] = (urlCounts[tab.url] || 0) + 1;
 
   const dupeUrls = Object.entries(urlCounts).filter(([, count]) => count > 1);
@@ -839,6 +851,7 @@ function createDomainCard(group) {
       data-action="focus-tab"
       role="button"
       tabindex="0"
+      ${hasCJK(label) ? 'lang="zh-CN"' : ''}
       title="${escapeHtml(label)}">
       ${pin}<img class="chip-favicon" src="${escapeHtml(faviconFor(tab))}" alt="">
       <span class="chip-text">${escapeHtml(label)}</span>${dupeTag}
@@ -1493,13 +1506,16 @@ function initTheme(savedTheme) {
   applyTheme(savedTheme || detectDefaultTheme());
 
   // Listen for system theme changes
-  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
-    // Only auto-switch if user has not set manually
-    chrome.storage.local.get(THEME_KEY).then(({ [THEME_KEY]: saved }) => {
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', async (e) => {
+    try {
+      // Only auto-switch if the user has not set a preference manually
+      const { [THEME_KEY]: saved } = await chrome.storage.local.get(THEME_KEY);
       if (!saved) {
         applyTheme(e.matches ? 'dark' : 'light');
       }
-    });
+    } catch {
+      // A stale extension context has no storage; keep the current theme.
+    }
   });
 
   // Bind toggle button
