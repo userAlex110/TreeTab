@@ -56,26 +56,34 @@ async function updateBadge() {
 
   } catch {
     // If something goes wrong, clear the badge rather than show stale data
-    chrome.action.setBadgeText({ text: '' });
+    try {
+      await chrome.action.setBadgeText({ text: '' });
+    } catch { /* the toolbar is unreachable; nothing left to update */ }
   }
 }
 
 // ─── Event listeners ──────────────────────────────────────────────────────────
 
-// A page load fires many onUpdated events in a row; coalesce them so the
-// service worker queries tabs once per burst instead of once per event.
-const BADGE_DEBOUNCE_MS = 300;
-let badgeTimer = null;
-
 /**
  * scheduleBadgeUpdate()
  *
- * Debounced updateBadge() — the badge only needs to show the count once a
- * burst of tab events has settled.
+ * Coalesces a burst of tab events into one updateBadge() run.
+ *
+ * A page load fires many onUpdated events in a row, and a service worker is
+ * torn down after ~30s idle — so this chains onto the previous run instead of
+ * holding a setTimeout handle in a global. The flag is self-healing: it only
+ * needs to live as long as the burst, and the next event re-arms it.
  */
+let badgeChain = Promise.resolve();
+let badgeQueued = false;
+
 function scheduleBadgeUpdate() {
-  clearTimeout(badgeTimer);
-  badgeTimer = setTimeout(updateBadge, BADGE_DEBOUNCE_MS);
+  if (badgeQueued) return;
+  badgeQueued = true;
+  badgeChain = badgeChain.then(() => {
+    badgeQueued = false;
+    return updateBadge();
+  });
 }
 
 // Update badge when the extension is first installed
@@ -95,5 +103,5 @@ chrome.tabs.onUpdated.addListener(scheduleBadgeUpdate);
 
 // ─── Initial run ─────────────────────────────────────────────────────────────
 
-// Run once immediately when the service worker first loads
-updateBadge();
+// Run once when the service worker first loads
+scheduleBadgeUpdate();

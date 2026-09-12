@@ -51,8 +51,9 @@
   --font-sans: 'DM Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-serif: 'Newsreader', Georgia, 'Times New Roman', serif;
 
-  /* Native scrollbars / form controls follow the active theme */
-  color-scheme: light;
+  /* Native scrollbars / form controls follow the system preference until
+     app.js applies a saved theme; data-theme then pins the scheme. */
+  color-scheme: light dark;
 
   /* RGB tuples for rgba() usage */
   --rgb-ink: 26, 46, 26;

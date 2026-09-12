@@ -116,6 +116,7 @@ const cardScrollPositions = new Map();
 
 let refreshTimer = null;
 let refreshQueued = false;
+let refreshInFlight = false;
 let toastTimer = null;
 let confirmTimer = null;
 let audioContext = null;
@@ -435,6 +436,10 @@ function handleDragEnd(e) {
 
   clearDragOver();
   draggedTabId = null;
+
+  // flushRefresh() skips while a drag is in flight, so without this the queued
+  // pass would wait for the next Chrome event — which may never come.
+  if (refreshQueued) scheduleRefresh();
 }
 
 function clearDragOver() {
@@ -894,6 +899,14 @@ function createDomainCard(group) {
     </div>
   `;
 
+  // The board re-renders on every browser event, so re-arm the button the user
+  // just clicked instead of silently losing the confirmation mid-flight.
+  if (armedConfirm && Date.now() < armedConfirm.expiresAt) {
+    const armed = [...card.querySelectorAll('.action-btn')]
+      .find(el => confirmKey(el) === armedConfirm.key);
+    if (armed) applyConfirmVisual(armed, armedConfirm.label);
+  }
+
   return card;
 }
 
@@ -1270,6 +1283,14 @@ async function checkTabOutDupes() {
 }
 
 async function refreshAll() {
+  // Chrome events and the action handlers both call this. Two passes running
+  // at once let the slower query win the last render, so queue instead.
+  if (refreshInFlight) {
+    refreshQueued = true;
+    return;
+  }
+  refreshInFlight = true;
+
   try {
     captureScrollPositions();
     await fetchData();
@@ -1281,6 +1302,10 @@ async function refreshAll() {
     // A reloaded/unloaded extension leaves this page with no chrome.* APIs:
     // keep the last board on screen instead of throwing on every event.
     console.error('[TreeTab] Refresh failed:', err);
+  } finally {
+    refreshInFlight = false;
+    // Anything that arrived mid-render still needs its own pass.
+    if (refreshQueued) scheduleRefresh();
   }
 }
 
@@ -1418,6 +1443,33 @@ async function focusTab(tabId) {
   }
 }
 
+/** The bulk-close button currently armed by a first click, if any. */
+let armedConfirm = null;
+
+/**
+ * confirmKey(el)
+ * * Identifies an armed button across re-renders: the board rebuilds its
+ *   innerHTML on every browser event, so the DOM node cannot hold the state.
+ */
+function confirmKey(el) {
+  return `${el.dataset.action}::${el.dataset.domain || ''}`;
+}
+
+/**
+ * applyConfirmVisual(el, label)
+ * * Paint the armed look on a button, or clear it when label is falsy.
+ */
+function applyConfirmVisual(el, label) {
+  if (label) {
+    el.dataset.restingLabel = el.textContent;
+    el.textContent = label;
+    el.classList.add('confirming');
+  } else {
+    el.textContent = el.dataset.restingLabel || el.textContent;
+    el.classList.remove('confirming');
+  }
+}
+
 /**
  * needsConfirm(el, label)
  * * Two-step guard for bulk destructive buttons: the first click only arms
@@ -1425,30 +1477,33 @@ async function focusTab(tabId) {
  *   Returns true while the button is still unarmed.
  */
 function needsConfirm(el, label) {
-  if (el.dataset.confirming === '1') {
-    resetConfirm(el);
+  const key = confirmKey(el);
+
+  if (armedConfirm && armedConfirm.key === key && Date.now() < armedConfirm.expiresAt) {
+    disarmConfirm();
     return false;
   }
 
   // Only one button is ever armed — arming a new one disarms the rest
-  document.querySelectorAll('[data-confirming="1"]').forEach(resetConfirm);
+  disarmConfirm();
 
-  el.dataset.confirming = '1';
-  el.dataset.restingLabel = el.textContent;
-  el.textContent = label;
-  el.classList.add('confirming');
+  armedConfirm = { key, label, expiresAt: Date.now() + CONFIRM_TIMEOUT_MS };
+  applyConfirmVisual(el, label);
 
-  clearTimeout(confirmTimer);
-  confirmTimer = setTimeout(() => resetConfirm(el), CONFIRM_TIMEOUT_MS);
+  confirmTimer = setTimeout(disarmConfirm, CONFIRM_TIMEOUT_MS);
   return true;
 }
 
-function resetConfirm(el) {
-  if (!el || el.dataset.confirming !== '1') return;
+/**
+ * disarmConfirm()
+ * * Drop the armed state and reset whichever button is showing it right now.
+ */
+function disarmConfirm() {
+  clearTimeout(confirmTimer);
+  armedConfirm = null;
 
-  el.dataset.confirming = '0';
-  el.textContent = el.dataset.restingLabel || el.textContent;
-  el.classList.remove('confirming');
+  document.querySelectorAll('.action-btn.confirming')
+    .forEach(el => applyConfirmVisual(el, null));
 }
 
 // ================================================================
@@ -1531,6 +1586,12 @@ function initTheme(savedTheme) {
  */
 function applyTheme(theme) {
   document.documentElement.setAttribute('data-theme', theme);
+
+  // Keep <meta name="color-scheme"> in step with the pinned theme so native UI
+  // and the pre-paint canvas match it (style.css defaults :root to "light dark").
+  const meta = document.querySelector('meta[name="color-scheme"]');
+  if (meta) meta.content = theme === 'dark' ? 'dark' : 'light';
+
   updateThemeIcon(theme);
 }
 
@@ -1589,7 +1650,7 @@ function initBackground(savedImage, legacyOpacityValue) {
   watchBgStorageChanges();
 
   if (legacyOpacityValue !== undefined) {
-    chrome.storage.local.remove(BG_OPACITY_KEY_LEGACY);
+    chrome.storage.local.remove(BG_OPACITY_KEY_LEGACY).catch(() => {});
   }
 }
 
@@ -1600,6 +1661,8 @@ function initBackground(savedImage, legacyOpacityValue) {
 function applyBackgroundLayer(imageDataUrl) {
   const layer = document.getElementById('bgLayer');
   const removeBtn = document.getElementById('bgRemoveBtn');
+
+  if (!layer || !removeBtn) return;
 
   if (imageDataUrl && imageDataUrl.startsWith('data:image/')) {
     layer.style.backgroundImage = `url("${imageDataUrl}")`;
@@ -1618,6 +1681,8 @@ function applyBackgroundLayer(imageDataUrl) {
 function wireBgUploadButton() {
   const uploadBtn = document.getElementById('bgUploadBtn');
   const fileInput = document.getElementById('bgFileInput');
+
+  if (!uploadBtn || !fileInput) return;
 
   uploadBtn.addEventListener('click', () => fileInput.click());
 
@@ -1686,6 +1751,8 @@ function loadImageIntoElement(src) {
 function wireBgResetButton() {
   const removeBtn = document.getElementById('bgRemoveBtn');
 
+  if (!removeBtn) return;
+
   removeBtn.addEventListener('click', async () => {
     const layer = document.getElementById('bgLayer');
 
@@ -1724,6 +1791,8 @@ function closeBgPopover() {
 function wireBgPopover() {
   const btn = document.getElementById('bgToggleBtn');
   const popover = document.getElementById('bgPopover');
+
+  if (!btn || !popover) return;
 
   btn.addEventListener('click', () => {
     const willOpen = popover.hidden;
@@ -1773,18 +1842,29 @@ async function init() {
   }
 
   // One storage round-trip covers every persisted preference
-  const stored = await chrome.storage.local.get([
-    THEME_KEY,
-    BG_IMAGE_KEY,
-    BG_OPACITY_KEY_LEGACY,
-  ]);
+  try {
+    const stored = await chrome.storage.local.get([
+      THEME_KEY,
+      BG_IMAGE_KEY,
+      BG_OPACITY_KEY_LEGACY,
+    ]);
 
-  initTheme(stored[THEME_KEY]);
-  initBackground(stored[BG_IMAGE_KEY], stored[BG_OPACITY_KEY_LEGACY]);
+    initTheme(stored[THEME_KEY]);
+    initBackground(stored[BG_IMAGE_KEY], stored[BG_OPACITY_KEY_LEGACY]);
+  } catch (err) {
+    // A failed preference read must never leave the board blank.
+    console.error('[TreeTab] Could not load preferences:', err);
+    applyTheme(detectDefaultTheme());
+  }
 
   await refreshAll();
   setupNewGroupDropzone();
   watchBrowserState();
 }
+
+// The saved theme only arrives after an async storage read, so paint the likely
+// one right away — a dark-mode user should not see a light frame first.
+// init() corrects this if the stored value turns out to differ.
+applyTheme(detectDefaultTheme());
 
 document.addEventListener('DOMContentLoaded', init);
