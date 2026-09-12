@@ -36,10 +36,6 @@
 
 Chrome Manifest V3，**无构建步骤**——`extension/` 里的 HTML/CSS/JS 就是全部源码，改了重载扩展即生效。音效由 Web Audio API 合成，没有音频文件；字体是 `extension/fonts/` 里的可变字体（OFL 1.1 许可），favicon 直接取浏览器给每个标签页的图标，不查任何在线服务。
 
-## 文档约定
-
-改代码时**同步更新所有文档**（README、AGENTS.md 等）。本项目主要由 AI 维护，文档就是 AI 的记忆，过期的文档等于失忆。
-
 ## 致谢与许可
 
 基于 [TabOut](https://github.com/zarazhangrui/tab-out)（MIT）开发而来，感谢原作者。本项目同样以 [MIT](LICENSE) 许可发布。
