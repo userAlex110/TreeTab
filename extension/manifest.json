@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "TreeTab",
-  "version": "1.2.2",
-  "description": "TreeTab - 标签组看板，以看板形式管理你的浏览器标签页",
+  "version": "1.3.0",
+  "description": "TreeTab - 在新标签页里整理当前窗口：未分组按网站收拢，标签组单独管理，可搜索，可恢复刚关掉的页面。数据只留在本地。",
   "permissions": ["tabs", "storage", "tabGroups"],
   "chrome_url_overrides": { "newtab": "index.html" },
   "background": { "service_worker": "background.js" },

@@ -1,70 +1,50 @@
 /**
- * background.js — Service Worker for Badge Updates
+ * background.js — Service worker
  *
- * Chrome's "always-on" background script for TreeTab.
- * Its only job: keep the toolbar badge showing the current open tab count.
- *
- * Since we no longer have a server, we query chrome.tabs directly.
- * The badge counts real web tabs (skipping chrome:// and extension pages).
- *
- * The colour coding comes from TAB_LOAD_TIERS in shared.js, which the new tab
- * page's footer badge reads as well — one tier table, two badges.
+ * Two jobs, both local:
+ * 1. Toolbar badge: how many real web tabs are open, coloured by the shared
+ *    tier table in shared.js.
+ * 2. Recently closed tray: remember a modest list of pages the user just
+ *    closed, so the new-tab page can reopen them without the "sessions"
+ *    permission (and without sync). Snapshots live in chrome.storage.session
+ *    because a service worker is torn down after ~30s idle; onRemoved only
+ *    receives a tab id, so the URL has to be saved before the close.
  */
 
-// Shared tier table (classic worker: importScripts is available at the top level)
 importScripts('shared.js');
 
 // ─── Badge updater ────────────────────────────────────────────────────────────
 
 /**
  * updateBadge()
- *
- * Counts open real-web tabs and updates the extension's toolbar badge.
- * "Real" tabs = not chrome://, not extension pages, not about:blank.
+ * * Counts open real-web tabs and updates the extension's toolbar badge.
+ *   "Real" tabs = not browser internals and not extension pages.
  */
 async function updateBadge() {
   try {
     const tabs = await chrome.tabs.query({});
-
-    // Only count actual web pages — skip browser internals and extension pages
-    const count = tabs.filter(t => {
-      const url = t.url || '';
-      return (
-        !url.startsWith('chrome://') &&
-        !url.startsWith('chrome-extension://') &&
-        !url.startsWith('about:') &&
-        !url.startsWith('edge://') &&
-        !url.startsWith('brave://')
-      );
-    }).length;
+    const count = tabs.filter(tab => !isInternalPageUrl(tab.url)).length;
 
     // Don't show "0" — an empty badge is cleaner
     await chrome.action.setBadgeText({ text: count > 0 ? String(count) : '' });
 
     if (count === 0) return;
 
-    // Workload colour comes from the shared tier table
     await chrome.action.setBadgeBackgroundColor({ color: tabLoadTier(count).color });
-
   } catch {
-    // If something goes wrong, clear the badge rather than show stale data
     try {
       await chrome.action.setBadgeText({ text: '' });
     } catch { /* the toolbar is unreachable; nothing left to update */ }
   }
 }
 
-// ─── Event listeners ──────────────────────────────────────────────────────────
-
 /**
  * scheduleBadgeUpdate()
- *
- * Coalesces a burst of tab events into one updateBadge() run.
- *
- * A page load fires many onUpdated events in a row, and a service worker is
- * torn down after ~30s idle — so this chains onto the previous run instead of
- * holding a setTimeout handle in a global. The flag is self-healing: it only
- * needs to live as long as the burst, and the next event re-arms it.
+ * * Coalesces a burst of tab events into one updateBadge() run.
+ *   A page load fires many onUpdated events in a row, and a service worker is
+ *   torn down after ~30s idle — so this chains onto the previous run instead of
+ *   holding a setTimeout handle in a global. The flag is self-healing: it only
+ *   needs to live as long as the burst, and the next event re-arms it.
  */
 let badgeChain = Promise.resolve();
 let badgeQueued = false;
@@ -78,22 +58,155 @@ function scheduleBadgeUpdate() {
   });
 }
 
-// Update badge when the extension is first installed
-chrome.runtime.onInstalled.addListener(scheduleBadgeUpdate);
+// ─── Recently closed ──────────────────────────────────────────────────────────
 
-// Update badge when Chrome starts up
-chrome.runtime.onStartup.addListener(scheduleBadgeUpdate);
+/**
+ * sessionChain
+ * * Snapshot writes and "record a close" reads share one queue. Two closes in
+ *   the same tick would otherwise read the same list and drop one of them.
+ *   The chain is coordination, not the list itself — the list lives in
+ *   chrome.storage.local and survives the worker.
+ */
+let sessionChain = Promise.resolve();
 
-// Update badge whenever a tab is opened
-chrome.tabs.onCreated.addListener(scheduleBadgeUpdate);
+function enqueueSession(task) {
+  sessionChain = sessionChain.then(task, task);
+  return sessionChain;
+}
 
-// Update badge whenever a tab is closed
-chrome.tabs.onRemoved.addListener(scheduleBadgeUpdate);
+function snapshotFromTab(tab) {
+  const url = tab.url || tab.pendingUrl || '';
+  if (!isRestorableUrl(url)) return null;
 
-// Update badge when a tab's URL changes (e.g. navigating to/from chrome://)
-chrome.tabs.onUpdated.addListener(scheduleBadgeUpdate);
+  const favIconUrl = typeof tab.favIconUrl === 'string' && tab.favIconUrl.length <= RECENT_FAVICON_MAX
+    ? tab.favIconUrl
+    : '';
 
-// ─── Initial run ─────────────────────────────────────────────────────────────
+  return {
+    url,
+    title: String(tab.title || url).slice(0, 300),
+    favIconUrl,
+  };
+}
 
-// Run once when the service worker first loads
+/**
+ * rememberTab(tab)
+ * * Keep a session snapshot so a later onRemoved (which has no URL) can still
+ *   name the page. Re-reads the tab inside the queue: a close that already
+ *   ran will make tabs.get reject, and we must not resurrect that snapshot.
+ */
+function rememberTab(tab) {
+  if (!tab || tab.id == null) return;
+
+  enqueueSession(async () => {
+    let fresh = tab;
+    try {
+      fresh = await chrome.tabs.get(tab.id);
+    } catch {
+      return;
+    }
+
+    const stored = await chrome.storage.session.get(TAB_SNAPSHOTS_KEY);
+    const snapshots = stored[TAB_SNAPSHOTS_KEY] || {};
+    const key = String(fresh.id);
+    const snap = snapshotFromTab(fresh);
+
+    if (!snap) {
+      if (!snapshots[key]) return;
+      delete snapshots[key];
+      await chrome.storage.session.set({ [TAB_SNAPSHOTS_KEY]: snapshots });
+      return;
+    }
+
+    const prev = snapshots[key];
+    if (prev && prev.url === snap.url && prev.title === snap.title && prev.favIconUrl === snap.favIconUrl) {
+      return;
+    }
+
+    snapshots[key] = snap;
+    await chrome.storage.session.set({ [TAB_SNAPSHOTS_KEY]: snapshots });
+  });
+}
+
+/**
+ * recordClosedTab(tabId)
+ * * Move the snapshot into the local restore list, then drop it. Same URL
+ *   collapses to one row so closing five copies does not become a history.
+ */
+function recordClosedTab(tabId) {
+  enqueueSession(async () => {
+    const stored = await chrome.storage.session.get(TAB_SNAPSHOTS_KEY);
+    const snapshots = stored[TAB_SNAPSHOTS_KEY] || {};
+    const key = String(tabId);
+    const snap = snapshots[key];
+
+    if (snap) {
+      delete snapshots[key];
+      await chrome.storage.session.set({ [TAB_SNAPSHOTS_KEY]: snapshots });
+    }
+
+    if (!snap || !isRestorableUrl(snap.url)) return;
+
+    const data = await chrome.storage.local.get(RECENTLY_CLOSED_KEY);
+    const next = normalizeRecent([
+      { ...snap, closedAt: Date.now() },
+      ...(Array.isArray(data[RECENTLY_CLOSED_KEY]) ? data[RECENTLY_CLOSED_KEY] : []),
+    ]);
+    await chrome.storage.local.set({ [RECENTLY_CLOSED_KEY]: next });
+  });
+}
+
+/**
+ * seedSnapshotsIfEmpty()
+ * * Fill the session map once. A full rebuild on every worker start would
+ *   race a close: the tab is already gone, the seed would wipe the snapshot,
+ *   and the restore list would miss it. Session storage survives worker
+ *   restarts, so "only when missing" is the right gate.
+ */
+function seedSnapshotsIfEmpty() {
+  enqueueSession(async () => {
+    const stored = await chrome.storage.session.get(TAB_SNAPSHOTS_KEY);
+    if (stored[TAB_SNAPSHOTS_KEY]) return;
+
+    const tabs = await chrome.tabs.query({});
+    const snapshots = {};
+    for (const tab of tabs) {
+      const snap = snapshotFromTab(tab);
+      if (snap) snapshots[String(tab.id)] = snap;
+    }
+    await chrome.storage.session.set({ [TAB_SNAPSHOTS_KEY]: snapshots });
+  });
+}
+
+// ─── Event listeners (registered synchronously) ──────────────────────────────
+
+chrome.runtime.onInstalled.addListener(() => {
+  scheduleBadgeUpdate();
+  seedSnapshotsIfEmpty();
+});
+
+chrome.runtime.onStartup.addListener(() => {
+  scheduleBadgeUpdate();
+  seedSnapshotsIfEmpty();
+});
+
+chrome.tabs.onCreated.addListener((tab) => {
+  scheduleBadgeUpdate();
+  rememberTab(tab);
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  scheduleBadgeUpdate();
+  recordClosedTab(tabId);
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  scheduleBadgeUpdate();
+  const worthRemembering = changeInfo.url || changeInfo.title
+    || changeInfo.favIconUrl !== undefined
+    || changeInfo.status === 'complete';
+  if (worthRemembering) rememberTab(tab);
+});
+
 scheduleBadgeUpdate();
+seedSnapshotsIfEmpty();
