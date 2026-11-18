@@ -373,12 +373,12 @@ function createGroupCard(group, tabs, partial) {
   card.className = 'group-card';
   card.dataset.groupId = group.id;
 
-  const closableCount = tabs.filter(tab => !tab.pinned).length;
+  const closableIds = confirmedIdList(tabs.filter(tab => !tab.pinned));
   // Partial cards are a search slice. Deleting the group would also close
   // tabs the filter hid, so the button stays off until the search is cleared
   // or the group name itself matched (partial === false, full tab list).
-  const deleteButton = partial || closableCount === 0 ? '' : `
-      <button class="group-action-btn group-close-btn" type="button" data-action="delete-group" data-group-id="${group.id}" title="删除分组" aria-label="删除分组">
+  const deleteButton = partial || closableIds.length === 0 ? '' : `
+      <button class="group-action-btn group-close-btn" type="button" data-action="delete-group" data-group-id="${group.id}" data-tab-ids="${closableIds.join(',')}" title="删除分组" aria-label="删除分组">
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" />
         </svg>
@@ -673,8 +673,11 @@ async function removeTabs(tabIds) {
  * * Delete a tab group and close all its tabs. Closing the last tab removes
  *   the group itself: chrome.tabGroups exposes no remove() method.
  */
-async function deleteGroup(groupId) {
-  const closable = allTabs.filter(tab => tab.groupId === groupId && !tab.pinned);
+async function deleteGroup(groupId, tabIds) {
+  const allowed = new Set(tabIds);
+  const closable = allTabs.filter(tab =>
+    allowed.has(tab.id) && tab.groupId === groupId && !tab.pinned
+  );
   if (closable.length === 0) {
     showToast('固定的标签会留下来');
     return;
@@ -1016,15 +1019,17 @@ function createDomainCard(group) {
   // Action buttons
   let actionsHtml = '';
 
-  if (closableTabs.length > 0) {
-    const pinnedNote = closableTabs.length < tabs.length
+  const closableIds = confirmedIdList(closableTabs);
+  if (closableIds.length > 0) {
+    const pinnedNote = closableIds.length < tabs.length
       ? '固定的标签会留下来'
       : '关闭这张卡片里的标签';
-    actionsHtml += `<button type="button" class="action-btn close-tabs" data-action="close-domain-tabs" data-domain="${escapeHtml(group.domain)}" title="${pinnedNote}">关闭这 ${closableTabs.length} 个标签</button>`;
+    actionsHtml += `<button type="button" class="action-btn close-tabs" data-action="close-domain-tabs" data-domain="${escapeHtml(group.domain)}" data-tab-ids="${closableIds.join(',')}" title="${pinnedNote}">关闭这 ${closableIds.length} 个标签</button>`;
   }
 
-  if (hasDupes) {
-    actionsHtml += `<button type="button" class="action-btn" data-action="dedup-keep-one" data-domain="${escapeHtml(group.domain)}">关掉 ${totalExtras} 个重复</button>`;
+  const dupeIds = duplicateCloseIds(closableTabs);
+  if (dupeIds.length > 0) {
+    actionsHtml += `<button type="button" class="action-btn" data-action="dedup-keep-one" data-domain="${escapeHtml(group.domain)}" data-tab-ids="${dupeIds.join(',')}">关掉 ${dupeIds.length} 个重复</button>`;
   }
 
   card.innerHTML = `
@@ -1272,24 +1277,23 @@ document.addEventListener('click', async (e) => {
     const groupId = parseInt(actionEl.dataset.groupId, 10);
     if (!groupId) return;
 
-    const closable = allTabs.filter(tab => tab.groupId === groupId && !tab.pinned);
-    if (closable.length === 0) {
+    const tabIds = confirmedIds(actionEl);
+    if (tabIds.length === 0) {
       showToast('固定的标签会留下来');
       return;
     }
 
-    if (needsConfirm(actionEl, `再点一次，关闭 ${closable.length} 个`)) return;
+    if (needsConfirm(actionEl, `再点一次，关闭 ${tabIds.length} 个`)) return;
 
-    await deleteGroup(groupId);
+    await deleteGroup(groupId, tabIds);
     return;
   }
 
-  // Close every closable tab in one domain card — bulk, so it asks twice
+  // Close the tabs this button was rendered for — bulk, so it asks twice.
+  // The ids are stamped on the button, so a search that rebuilds the card
+  // with a different set starts the confirmation over.
   if (action === 'close-domain-tabs') {
-    const group = domainGroups.find(g => g.domain === actionEl.dataset.domain);
-    if (!group) return;
-
-    const tabIds = group.tabs.filter(t => !t.pinned).map(t => t.id);
+    const tabIds = confirmedIds(actionEl);
     if (tabIds.length === 0) return;
 
     if (needsConfirm(actionEl, `再点一次，关闭 ${tabIds.length} 个`)) return;
@@ -1310,26 +1314,9 @@ document.addEventListener('click', async (e) => {
     return;
   }
 
-  // Deduplication — one survivor per URL, scoped to what the card shows
+  // Deduplication — one survivor per URL, the extras stamped on the button
   if (action === 'dedup-keep-one') {
-    const group = domainGroups.find(g => g.domain === actionEl.dataset.domain);
-    if (!group) return;
-
-    const byUrl = new Map();
-    for (const tab of group.tabs) {
-      if (tab.pinned) continue;
-      if (!byUrl.has(tab.url)) byUrl.set(tab.url, []);
-      byUrl.get(tab.url).push(tab);
-    }
-
-    const tabIds = [];
-    for (const tabs of byUrl.values()) {
-      if (tabs.length < 2) continue;
-      const keep = tabs.find(t => t.active) || tabs[0];
-      for (const tab of tabs) {
-        if (tab.id !== keep.id) tabIds.push(tab.id);
-      }
-    }
+    const tabIds = confirmedIds(actionEl);
     if (tabIds.length === 0) return;
 
     if (needsConfirm(actionEl, `再点一次，关掉 ${tabIds.length} 个重复`)) return;
@@ -1706,7 +1693,63 @@ let armedConfirm = null;
  *   innerHTML on every browser event, so the DOM node cannot hold the state.
  */
 function confirmKey(el) {
-  return `${el.dataset.action}::${el.dataset.domain || el.dataset.groupId || ''}`;
+  // Tab ids, not just the domain: a search between the two clicks rebuilds
+  // the card, and the second click must not close a different set.
+  const scope = el.dataset.tabIds || el.dataset.domain || el.dataset.groupId || '';
+  return `${el.dataset.action}::${scope}`;
+}
+
+/**
+ * confirmedIdList(tabs)
+ * * Stable id list for a bulk button. Sorting keeps the confirm key the
+ *   same when a refresh reorders the card.
+ */
+function confirmedIdList(tabs) {
+  return tabs
+    .map(tab => tab.id)
+    .filter(id => Number.isInteger(id) && id > 0)
+    .sort((a, b) => a - b);
+}
+
+/**
+ * duplicateCloseIds(tabs)
+ * * The unpinned extras a dedupe button would close: one tab per URL stays,
+ *   preferring the active one.
+ */
+function duplicateCloseIds(tabs) {
+  const byUrl = new Map();
+  for (const tab of tabs) {
+    if (tab.pinned) continue;
+    if (!byUrl.has(tab.url)) byUrl.set(tab.url, []);
+    byUrl.get(tab.url).push(tab);
+  }
+
+  const ids = [];
+  for (const group of byUrl.values()) {
+    if (group.length < 2) continue;
+    const keep = group.find(tab => tab.active) || group[0];
+    for (const tab of group) {
+      if (tab.id !== keep.id) ids.push(tab.id);
+    }
+  }
+  return confirmedIdList(ids.map(id => ({ id })));
+}
+
+/**
+ * confirmedIds(el)
+ * * The tab ids stamped on a bulk button. Still-pinned tabs are dropped so
+ *   a pin applied between the two clicks is not closed.
+ */
+function confirmedIds(el) {
+  const wanted = new Set(
+    (el.dataset.tabIds || '')
+      .split(',')
+      .map(part => Number(part))
+      .filter(id => Number.isInteger(id) && id > 0)
+  );
+  return allTabs
+    .filter(tab => wanted.has(tab.id) && !tab.pinned)
+    .map(tab => tab.id);
 }
 
 /**
