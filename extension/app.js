@@ -1,7 +1,8 @@
 /* ================================================================
    TreeTab — New Tab Dashboard
-   Top: Domain-grouped tabs (kanban cards)
-   Bottom: Browser tab groups (masonry layout, drag to manage)
+   Top: loose tabs, gathered by site
+   Bottom: Chrome tab groups (drag to manage; drop back on top to ungroup)
+   Search filters this window. Recently closed is a local restore tray.
 
    Features:
    1. Display browser tab groups with drag-and-drop management
@@ -18,7 +19,7 @@
 // Constants
 // ================================================================
 
-const GROUP_COLORS = ['grey', 'blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan'];
+const GROUP_COLORS = ['grey', 'blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange'];
 
 /** Sentinel domain key of the aggregated homepages card */
 const LANDING_DOMAIN = '__landing-pages__';
@@ -54,7 +55,7 @@ const FRIENDLY_DOMAINS = {
   'linkedin.com': 'LinkedIn',
   'www.linkedin.com': 'LinkedIn',
   'mail.google.com': 'Gmail',
-  'local-files': 'Local Files',
+  'local-files': '本地文件',
 };
 
 /** Homepage-ish URLs, pulled out of their domain card into a shared one */
@@ -128,6 +129,19 @@ let confirmTimer = null;
 let greetingTimer = null;
 let audioContext = null;
 
+/** What the search field is currently filtering. Not persisted. */
+let searchQuery = '';
+
+/** Local restore tray. The service worker owns writes; this is the cache. */
+let recentlyClosed = [];
+
+/** Open tabs currently painted, so the search status can name a count. */
+let visibleMatchCount = 0;
+
+let boardRendering = false;
+let boardDirty = false;
+let searchTimer = null;
+
 // ================================================================
 // Small helpers
 // ================================================================
@@ -144,11 +158,68 @@ function escapeHtml(value) {
 
 /**
  * hasCJK(value)
- * * True when a title carries CJK text. The UI is English, so such titles are
- *   tagged lang="zh-CN" at render to keep screen readers pronouncing them right.
+ * * The page language is zh-CN. A title with no Han characters but with
+ *   Latin letters is tagged lang="en" so a screen reader doesn't read
+ *   "GitHub" with a Chinese voice.
  */
 function hasCJK(value) {
   return /[\u3400-\u9fff]/.test(value || '');
+}
+
+function titleLangAttr(value) {
+  if (hasCJK(value)) return '';
+  if (/[A-Za-z]/.test(value || '')) return ' lang="en"';
+  return '';
+}
+
+/** 中文量词不随数量变化，避免「1 tabs」这种说法。 */
+function unitCount(n, noun) {
+  return `${n} 个${noun}`;
+}
+
+function queryValue() {
+  return searchQuery.trim().toLowerCase();
+}
+
+function textMatches(query, ...parts) {
+  if (!query) return true;
+  return parts.some(part => String(part || '').toLowerCase().includes(query));
+}
+
+function looseTabs() {
+  return allTabs.filter(tab => !tab.groupId || tab.groupId === -1);
+}
+
+function hostOf(url) {
+  try {
+    const host = new URL(url).hostname.replace(/^www\./, '');
+    return host || url;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * tabMatchesQuery(tab, query)
+ * * Title, URL, and the friendly site name. Empty query matches everything.
+ */
+function tabMatchesQuery(tab, query) {
+  if (!query) return true;
+  let host = '';
+  try { host = new URL(tab.url).hostname; } catch { /* file URLs and blanks */ }
+  const title = getCustomTitle(stripTitleSuffix(tab.title || ''), tab.url);
+  return textMatches(query, tab.title, title, tab.url, host, host ? friendlyDomain(host) : '');
+}
+
+/**
+ * setHtml(el, html)
+ * * Replace children without an empty innerHTML assignment. Callers still
+ *   escape page-controlled strings before they land in `html`.
+ */
+function setHtml(el, html) {
+  const tpl = document.createElement('template');
+  tpl.innerHTML = html;
+  el.replaceChildren(tpl.content);
 }
 
 /**
@@ -218,19 +289,7 @@ async function fetchData() {
       chrome.tabGroups.query({ windowId: currentWindow.id })
     ]);
 
-    // Filter out internal pages
-    allTabs = tabs.filter(tab => {
-      const url = tab.url || '';
-      if (url === 'chrome://newtab/') return false;
-      return (
-        !url.startsWith('chrome://') &&
-        !url.startsWith('chrome-extension://') &&
-        !url.startsWith('about:') &&
-        !url.startsWith('edge://') &&
-        !url.startsWith('brave://') &&
-        !url.startsWith('devtools://')
-      );
-    });
+    allTabs = tabs.filter(tab => !isInternalPageUrl(tab.url));
 
     allGroups = groups;
 
@@ -242,85 +301,106 @@ async function fetchData() {
     return { tabs: allTabs, groups: allGroups };
   } catch (err) {
     console.error('[TreeTab] Failed to fetch data:', err);
-    showToast('Failed to fetch data');
+    showToast('没能读到标签');
     return { tabs: [], groups: [] };
   }
 }
 
 // ================================================================
-// Tab Groups rendering (top section)
+// Tab groups — Chrome's own groups, not a second copy of loose tabs
 // ================================================================
 
-async function renderGroups() {
+/**
+ * collectGroupEntries(query)
+ * * A group name match shows every tab in that group. Otherwise only the
+ *   tabs that match, and the card is marked partial so "close the group"
+ *   stays hidden — that action closes tabs the filter is not showing.
+ */
+function collectGroupEntries(query) {
+  const entries = [];
+
+  for (const group of allGroups) {
+    const tabs = allTabs.filter(tab => tab.groupId === group.id);
+    if (tabs.length === 0) continue;
+
+    const name = group.title || '未命名';
+    if (!query) {
+      entries.push({ group, tabs, partial: false });
+      continue;
+    }
+
+    if (textMatches(query, name)) {
+      entries.push({ group, tabs, partial: false });
+      continue;
+    }
+
+    const matched = tabs.filter(tab => tabMatchesQuery(tab, query));
+    if (matched.length === 0) continue;
+    entries.push({ group, tabs: matched, partial: matched.length !== tabs.length });
+  }
+
+  return entries;
+}
+
+async function renderGroups(entries) {
   const container = document.getElementById('groupsContainer');
   const countEl = document.getElementById('groupsCount');
   const section = document.getElementById('groupsSection');
 
-  if (!container) return;
-  container.innerHTML = '';
+  if (!container || !section) return;
 
-  // Count groups with tabs
-  const groupTabsMap = {};
-  for (const tab of allTabs) {
-    if (tab.groupId && tab.groupId !== -1) {
-      if (!groupTabsMap[tab.groupId]) groupTabsMap[tab.groupId] = [];
-      groupTabsMap[tab.groupId].push(tab);
-    }
-  }
-
-  const activeGroups = allGroups.filter(g => groupTabsMap[g.id]?.length > 0);
-  if (countEl) countEl.textContent = `${activeGroups.length} groups`;
-
-  // With no real groups this section would only repeat the domain board above
-  if (activeGroups.length === 0) {
-    if (section) section.style.display = 'none';
+  if (entries.length === 0) {
+    section.hidden = true;
+    container.replaceChildren();
     return;
   }
-  if (section) section.style.display = 'block';
 
-  // Render each group, yielding between slices on a big board. The remembered
-  // scroll offset is written straight after a card lands in the document —
-  // a detached element has no box and would drop the write.
-  await runInSlices(activeGroups, group => {
-    const groupCard = createGroupCard(group, groupTabsMap[group.id]);
+  section.hidden = false;
+  if (countEl) countEl.textContent = unitCount(entries.length, '分组');
+  container.replaceChildren();
+
+  // The remembered scroll offset is written straight after a card lands in
+  // the document — a detached element has no box and would drop the write.
+  await runInSlices(entries, entry => {
+    const groupCard = createGroupCard(entry.group, entry.tabs, entry.partial);
     container.appendChild(groupCard);
-    restoreCardScroll(groupCard, String(group.id));
+    restoreCardScroll(groupCard, String(entry.group.id));
   });
-
-  // Always rendered once groups exist: it is the only drop target for dragging
-  // a tab back out of a group.
-  const ungroupedTabs = allTabs.filter(t => !t.groupId || t.groupId === -1);
-  const ungroupedCard = createUngroupedCard(ungroupedTabs);
-  container.appendChild(ungroupedCard);
-  restoreCardScroll(ungroupedCard, 'ungrouped');
 }
 
-function createGroupCard(group, tabs) {
+function createGroupCard(group, tabs, partial) {
   const card = document.createElement('div');
   card.className = 'group-card';
   card.dataset.groupId = group.id;
 
+  const closableIds = confirmedIdList(tabs.filter(tab => !tab.pinned));
+  // Partial cards are a search slice. Deleting the group would also close
+  // tabs the filter hid, so the button stays off until the search is cleared
+  // or the group name itself matched (partial === false, full tab list).
+  const deleteButton = partial || closableIds.length === 0 ? '' : `
+      <button class="group-action-btn group-close-btn" type="button" data-action="delete-group" data-group-id="${group.id}" data-tab-ids="${closableIds.join(',')}" title="删除分组" aria-label="删除分组">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" />
+        </svg>
+      </button>`;
+
   const header = document.createElement('div');
   header.className = 'group-header';
+  const title = group.title || '未命名';
   header.innerHTML = `
     <div class="group-color group-color-${escapeHtml(group.color)}"></div>
-    <div class="group-title" data-group-id="${group.id}">${escapeHtml(group.title || 'Unnamed Group')}</div>
+    <div class="group-title" data-group-id="${group.id}"${titleLangAttr(title)}>${escapeHtml(title)}</div>
     <div class="group-actions">
-      <button class="group-action-btn group-edit-btn" data-action="edit-group-name" data-group-id="${group.id}" title="Rename" aria-label="Rename group">
+      <button class="group-action-btn group-edit-btn" type="button" data-action="edit-group-name" data-group-id="${group.id}" title="重命名" aria-label="重命名分组">
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.863 4.487Zm0 0L19.5 7.125" />
         </svg>
       </button>
-      <button class="group-action-btn group-close-btn" data-action="delete-group" data-group-id="${group.id}" title="Delete group" aria-label="Delete group">
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" />
-        </svg>
-      </button>
+      ${deleteButton}
     </div>
     <div class="group-count">${tabs.length}</div>
   `;
 
-  // Click group name to edit
   const titleEl = header.querySelector('.group-title');
   titleEl.addEventListener('click', () => {
     editGroupName(group.id, titleEl);
@@ -330,68 +410,22 @@ function createGroupCard(group, tabs) {
   tabsList.className = 'group-tabs-list';
 
   for (const tab of tabs) {
-    const tabEl = createGroupTabElement(tab);
-    tabsList.appendChild(tabEl);
+    tabsList.appendChild(createGroupTabElement(tab));
   }
 
   card.appendChild(header);
   card.appendChild(tabsList);
 
-  // Drop a tab here to move it into this group
   setupDropZone(card, tabId => {
     const tab = allTabs.find(t => t.id === tabId);
     if (!tab || tab.groupId === group.id) return;
     return runTabAction(
       () => chrome.tabs.group({ groupId: group.id, tabIds: [tabId] }),
-      'Moved to group'
+      '已放进分组'
     );
   });
 
-  // A live refresh can rebuild this card mid-confirmation; keep the armed look
   reapplyArmedConfirm(card);
-
-  return card;
-}
-
-function createUngroupedCard(tabs) {
-  const card = document.createElement('div');
-  card.className = 'group-card';
-  card.dataset.groupId = 'ungrouped';
-
-  const header = document.createElement('div');
-  header.className = 'group-header';
-  header.innerHTML = `
-    <div class="group-color group-color-ungrouped"></div>
-    <div class="group-title">Ungrouped</div>
-    <div class="group-count">${tabs.length}</div>
-  `;
-
-  const tabsList = document.createElement('div');
-  tabsList.className = 'group-tabs-list';
-
-  if (tabs.length === 0) {
-    tabsList.innerHTML = '<div class="group-empty-hint">Drop a tab here to ungroup it</div>';
-  } else {
-    const visible = visibleTabsOf(tabs, 'ungrouped');
-    for (const tab of visible) {
-      tabsList.appendChild(createGroupTabElement(tab));
-    }
-    if (tabs.length > visible.length) {
-      tabsList.appendChild(createOverflowChip('ungrouped', `+${tabs.length - visible.length} more`));
-    } else if (visible.length > CHIP_LIMIT) {
-      tabsList.appendChild(createOverflowChip('ungrouped', 'Show less', 'collapse-chips'));
-    }
-  }
-
-  card.appendChild(header);
-  card.appendChild(tabsList);
-
-  // Drop here to ungroup
-  setupDropZone(card, tabId => {
-    const tab = allTabs.find(t => t.id === tabId);
-    if (!tab || !tab.groupId || tab.groupId === -1) return;
-    return runTabAction(() => chrome.tabs.ungroup(tabId), 'Removed from group');
-  });
 
   return card;
 }
@@ -418,14 +452,16 @@ function createGroupTabElement(tab) {
   el.draggable = true;
   el.dataset.tabId = tab.id;
 
-  const rawTitle = stripTitleSuffix(tab.title || tab.url || 'Untitled');
+  const rawTitle = stripTitleSuffix(tab.title || tab.url || '无标题');
   const title = getCustomTitle(rawTitle, tab.url);
 
   el.innerHTML = `
-    <img class="group-tab-favicon" src="${escapeHtml(faviconFor(tab))}" alt="" loading="lazy" decoding="async">
-    <div class="group-tab-title"${hasCJK(title) ? ' lang="zh-CN"' : ''} title="${escapeHtml(title)}">${escapeHtml(title)}</div>
+    <button type="button" class="group-tab-open" data-action="focus-tab" data-tab-id="${tab.id}">
+      <img class="group-tab-favicon" src="${escapeHtml(faviconFor(tab))}" alt="" loading="lazy" decoding="async">
+      <span class="group-tab-title"${titleLangAttr(title)} title="${escapeHtml(title)}">${escapeHtml(title)}</span>
+    </button>
     <div class="group-tab-actions">
-      <button class="group-tab-action group-tab-close" data-tab-id="${tab.id}" title="Close tab" aria-label="Close tab">
+      <button type="button" class="group-tab-action group-tab-close" data-action="close-single-tab" data-tab-id="${tab.id}" title="关闭" aria-label="关闭这个标签">
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" />
         </svg>
@@ -433,20 +469,6 @@ function createGroupTabElement(tab) {
     </div>
   `;
 
-  // Click to switch to tab
-  el.addEventListener('click', (e) => {
-    if (e.target.closest('.group-tab-action')) return;
-    focusTab(tab.id);
-  });
-
-  // Close button — fully close tab
-  const closeBtn = el.querySelector('.group-tab-close');
-  closeBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    closeTab(tab.id, el);
-  });
-
-  // Drag events
   el.addEventListener('dragstart', handleDragStart);
   el.addEventListener('dragend', handleDragEnd);
 
@@ -472,12 +494,17 @@ function handleDragStart(e) {
   draggedTabId = tabId;
   item.classList.add('dragging');
 
+  const dragged = allTabs.find(tab => tab.id === tabId);
+  document.body.classList.toggle(
+    'is-dragging-grouped',
+    !!(dragged && dragged.groupId && dragged.groupId !== -1)
+  );
+
   e.dataTransfer.effectAllowed = 'move';
   e.dataTransfer.setData('text/plain', String(tabId));
 
-  // Nudge first-time users: chips can be dropped onto a group
   if (item.classList.contains('page-chip')) {
-    showToast('Drop onto a group or the new group zone');
+    showToast('拖到下面的分组，或拖到新建分组的区域');
   }
 }
 
@@ -486,6 +513,7 @@ function handleDragEnd(e) {
   if (item) item.classList.remove('dragging');
 
   clearDragOver();
+  document.body.classList.remove('is-dragging-grouped');
   draggedTabId = null;
 
   // flushRefresh() skips while a drag is in flight, so without this the queued
@@ -498,15 +526,21 @@ function clearDragOver() {
 }
 
 /**
- * setupDropZone(element, onDrop)
- * * One drop-target implementation for every zone (group cards, the ungrouped
- *   card, the new-group strip). onDrop gets the dragged tab id; foreign drags
- *   (files, selected text) are ignored.
+ * setupDropZone(element, onDrop, accepts)
+ * * One drop-target implementation for every zone. onDrop gets the dragged
+ *   tab id; foreign drags (files, selected text) are ignored. accepts() can
+ *   decline a drag so a parent zone (the ungroup board) does not steal a
+ *   drop the inner zone wants, and so an ungrouped tab doesn't light up
+ *   the "move out of a group" board.
+ *   stopPropagation lets the innermost accepting zone win.
  */
-function setupDropZone(element, onDrop) {
+function setupDropZone(element, onDrop, accepts) {
+  const allowed = () => !accepts || accepts();
+
   element.addEventListener('dragover', (e) => {
-    if (draggedTabId === null) return;
+    if (draggedTabId === null || !allowed()) return;
     e.preventDefault();
+    e.stopPropagation();
     e.dataTransfer.dropEffect = 'move';
     element.classList.add('drag-over');
   });
@@ -518,7 +552,9 @@ function setupDropZone(element, onDrop) {
   });
 
   element.addEventListener('drop', async (e) => {
+    if (!allowed()) return;
     e.preventDefault();
+    e.stopPropagation();
     element.classList.remove('drag-over');
 
     // draggedTabId stays set until dragend, which fires after drop
@@ -540,8 +576,8 @@ function setupNewGroupDropzone() {
   setupDropZone(dropzone, tabId => runTabAction(async () => {
     const color = GROUP_COLORS[Math.floor(Math.random() * GROUP_COLORS.length)];
     const newGroupId = await chrome.tabs.group({ tabIds: [tabId] });
-    await chrome.tabGroups.update(newGroupId, { color, title: 'New Group' });
-  }, 'New group created'));
+    await chrome.tabGroups.update(newGroupId, { color, title: '新分组' });
+  }, '已新建分组'));
 }
 
 // ================================================================
@@ -558,7 +594,10 @@ async function editGroupName(groupId, titleEl) {
   input.type = 'text';
   input.value = currentTitle;
   input.className = 'group-title-input';
-  input.setAttribute('aria-label', 'Group name');
+  input.setAttribute('aria-label', '分组名称');
+  input.lang = 'zh-CN';
+  input.autocomplete = 'off';
+  input.spellcheck = false;
 
   // Replace title with input
   titleEl.replaceWith(input);
@@ -581,11 +620,11 @@ async function editGroupName(groupId, titleEl) {
 
     try {
       await chrome.tabGroups.update(groupId, { title: newTitle });
-      showToast('Group renamed');
+      showToast('分组已改名');
       await refreshAll();
     } catch (err) {
       console.error('[TreeTab] Rename failed:', err);
-      showToast('Rename failed');
+      showToast('没能改名');
       input.replaceWith(titleEl);
     }
   };
@@ -594,6 +633,9 @@ async function editGroupName(groupId, titleEl) {
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
+      // IME uses Enter to confirm a candidate. keyCode 229 covers the
+      // browsers that clear isComposing before this keydown runs.
+      if (e.isComposing || e.keyCode === 229) return;
       save();
     } else if (e.key === 'Escape') {
       settled = true;
@@ -631,14 +673,21 @@ async function removeTabs(tabIds) {
  * * Delete a tab group and close all its tabs. Closing the last tab removes
  *   the group itself: chrome.tabGroups exposes no remove() method.
  */
-async function deleteGroup(groupId) {
-  const groupTabs = allTabs.filter(t => t.groupId === groupId);
-  if (groupTabs.length === 0) return;
+async function deleteGroup(groupId, tabIds) {
+  const allowed = new Set(tabIds);
+  const closable = allTabs.filter(tab =>
+    allowed.has(tab.id) && tab.groupId === groupId && !tab.pinned
+  );
+  if (closable.length === 0) {
+    showToast('固定的标签会留下来');
+    return;
+  }
 
   playCloseSound();
+  const keptPinned = allTabs.some(tab => tab.groupId === groupId && tab.pinned);
   await runTabAction(
-    () => removeTabs(groupTabs.map(t => t.id)),
-    'Group and tabs closed'
+    () => removeTabs(closable.map(tab => tab.id)),
+    keptPinned ? `已关闭 ${closable.length} 个标签，固定的留着` : '分组已关闭'
   );
 }
 
@@ -800,36 +849,48 @@ function formatCamelCase(str) {
   return translated.join('');
 }
 
-async function renderDomains() {
+/**
+ * renderDomains(loose, query, groupHits)
+ * * The upper board is only tabs that are not in a Chrome group. `loose` is
+ *   already filtered by the search box. groupHits tells the empty copy whether
+ *   the lower board still has something to show.
+ */
+async function renderDomains(loose, query, groupHits) {
   const container = document.getElementById('domainsMissions');
   const countEl = document.getElementById('domainsCount');
-  const section = document.getElementById('domainsSection');
   const dropzone = document.getElementById('newGroupDropzone');
 
   if (!container) return;
-  container.innerHTML = '';
 
-  domainGroups = organizeByDomain(allTabs);
+  domainGroups = organizeByDomain(loose);
+  container.replaceChildren();
 
-  // Nothing else open: a friendly panel beats an empty grid
-  if (allTabs.length === 0) {
-    if (section) section.style.display = 'block';
-    if (countEl) countEl.textContent = '';
-    if (dropzone) dropzone.style.display = 'none';
-    container.innerHTML = renderEmptyState();
+  const hasTabs = allTabs.length > 0;
+  if (dropzone) dropzone.hidden = !(hasTabs && !query);
+  if (countEl) countEl.textContent = loose.length ? unitCount(loose.length, '标签') : '';
+
+  if (loose.length === 0) {
+    if (!query && !hasTabs) {
+      setHtml(container, renderEmptyState());
+      return;
+    }
+    if (!query) {
+      setHtml(container, boardNote('都收进分组了。把组里的标签拖到这里，可以移出来。'));
+      return;
+    }
+    setHtml(container, boardNote(groupHits > 0 ? '未分组里没有匹配的。' : '没有匹配的标签。'));
     return;
   }
 
-  if (section) section.style.display = 'block';
-  if (dropzone) dropzone.style.display = '';
-  if (countEl) countEl.textContent = `${domainGroups.length} domains`;
-
-  // One card per slice budget, so a hundred domains cannot freeze the page
   await runInSlices(domainGroups, group => {
     container.appendChild(createDomainCard(group));
   });
 
   attachChipDrag(container);
+}
+
+function boardNote(text) {
+  return `<p class="board-note">${escapeHtml(text)}</p>`;
 }
 
 /**
@@ -851,24 +912,20 @@ function attachChipDrag(root) {
  *   hands focus back to the card's fold control.
  */
 function rerenderCard(key, actionEl) {
-  const card = actionEl.closest('.mission-card, .group-card');
+  const card = actionEl.closest('.mission-card');
   if (!card) return;
 
-  const isDomainCard = card.classList.contains('mission-card');
-  const group = isDomainCard ? domainGroups.find(g => g.domain === key) : null;
-  if (isDomainCard && !group) return;
+  const group = domainGroups.find(item => item.domain === key);
+  if (!group) return;
 
-  const oldList = card.querySelector('.group-tabs-list');
+  const oldList = card.querySelector('.mission-pages');
   const scrollTop = oldList ? oldList.scrollTop : 0;
 
-  const fresh = isDomainCard
-    ? createDomainCard(group)
-    : createUngroupedCard(allTabs.filter(t => !t.groupId || t.groupId === -1));
-
+  const fresh = createDomainCard(group);
   card.replaceWith(fresh);
   attachChipDrag(fresh);
 
-  const freshList = fresh.querySelector('.group-tabs-list');
+  const freshList = fresh.querySelector('.mission-pages');
   if (freshList && scrollTop) freshList.scrollTop = scrollTop;
 
   const foldToggle = fresh.querySelector('.page-chip-overflow');
@@ -887,8 +944,8 @@ function renderEmptyState() {
           <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5" />
         </svg>
       </div>
-      <div class="empty-title">All clear</div>
-      <div class="empty-subtitle">Nothing else open in this window.</div>
+      <div class="empty-title">清清爽爽</div>
+      <div class="empty-subtitle">这个窗口里没有还开着的网页。</div>
     </div>`;
 }
 
@@ -914,11 +971,11 @@ function createDomainCard(group) {
     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="width:10px;height:10px">
       <path stroke-linecap="round" stroke-linejoin="round" d="M3 8.25V18a2.25 2.25 0 0 0 2.25 2.25h13.5A2.25 2.25 0 0 0 21 18V8.25m-18 0V6a2.25 2.25 0 0 1 2.25-2.25h13.5A2.25 2.25 0 0 1 21 6v2.25m-18 0h18" />
     </svg>
-    ${tabs.length} tabs
+    ${unitCount(tabs.length, '标签')}
   </span>`;
 
   if (hasDupes) {
-    badgesHtml += `<span class="open-tabs-badge">${totalExtras} duplicates</span>`;
+    badgesHtml += `<span class="open-tabs-badge">${unitCount(totalExtras, '重复')}</span>`;
   }
 
   // Tab chips — one per URL, duplicates collapse into a "(2x)" tag.
@@ -945,14 +1002,14 @@ function createDomainCard(group) {
     return `<li class="page-chip clickable ${chipClass}"
       draggable="true"
       data-tab-id="${tab.id}"
-      ${hasCJK(label) ? 'lang="zh-CN"' : ''}
+      ${titleLangAttr(label)}
       title="${escapeHtml(label)}">
       <button type="button" class="chip-open" data-action="focus-tab" data-tab-id="${tab.id}">
         ${pin}<img class="chip-favicon" src="${escapeHtml(faviconFor(tab))}" alt="" loading="lazy" decoding="async">
         <span class="chip-text">${escapeHtml(label)}</span>${dupeTag}
       </button>
       <div class="chip-actions">
-        <button class="chip-action chip-close" data-action="close-single-tab" data-tab-id="${tab.id}" title="Close tab" aria-label="Close tab">
+        <button type="button" class="chip-action chip-close" data-action="close-single-tab" data-tab-id="${tab.id}" title="关闭" aria-label="关闭这个标签">
           <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
         </button>
       </div>
@@ -962,21 +1019,23 @@ function createDomainCard(group) {
   // Action buttons
   let actionsHtml = '';
 
-  if (closableTabs.length > 0) {
-    const pinnedNote = closableTabs.length < tabs.length
-      ? 'Pinned tabs are kept open'
-      : 'Close every tab in this card';
-    actionsHtml += `<button class="action-btn close-tabs" data-action="close-domain-tabs" data-domain="${escapeHtml(group.domain)}" title="${pinnedNote}">Close all ${closableTabs.length} tabs</button>`;
+  const closableIds = confirmedIdList(closableTabs);
+  if (closableIds.length > 0) {
+    const pinnedNote = closableIds.length < tabs.length
+      ? '固定的标签会留下来'
+      : '关闭这张卡片里的标签';
+    actionsHtml += `<button type="button" class="action-btn close-tabs" data-action="close-domain-tabs" data-domain="${escapeHtml(group.domain)}" data-tab-ids="${closableIds.join(',')}" title="${pinnedNote}">关闭这 ${closableIds.length} 个标签</button>`;
   }
 
-  if (hasDupes) {
-    actionsHtml += `<button class="action-btn" data-action="dedup-keep-one" data-domain="${escapeHtml(group.domain)}">Close ${totalExtras} duplicates</button>`;
+  const dupeIds = duplicateCloseIds(closableTabs);
+  if (dupeIds.length > 0) {
+    actionsHtml += `<button type="button" class="action-btn" data-action="dedup-keep-one" data-domain="${escapeHtml(group.domain)}" data-tab-ids="${dupeIds.join(',')}">关掉 ${dupeIds.length} 个重复</button>`;
   }
 
   card.innerHTML = `
     <div class="mission-content">
       <div class="mission-top">
-        <span class="mission-name">${escapeHtml(isLanding ? 'Homepages' : friendlyDomain(group.domain))}</span>
+        <span class="mission-name">${escapeHtml(isLanding ? '常用首页' : friendlyDomain(group.domain))}</span>
         ${badgesHtml}
       </div>
       <ul class="mission-pages">${chipsHtml}</ul>
@@ -986,9 +1045,9 @@ function createDomainCard(group) {
 
   const pagesList = card.querySelector('.mission-pages');
   if (hiddenCount > 0) {
-    pagesList.appendChild(createOverflowChip(group.domain, `+${hiddenCount} more`));
+    pagesList.appendChild(createOverflowChip(group.domain, `还有 ${hiddenCount} 个`));
   } else if (visibleTabs.length > CHIP_LIMIT) {
-    pagesList.appendChild(createOverflowChip(group.domain, 'Show less', 'collapse-chips'));
+    pagesList.appendChild(createOverflowChip(group.domain, '收起', 'collapse-chips'));
   }
 
   // A live refresh can rebuild this card mid-confirmation; keep the armed look
@@ -1182,7 +1241,7 @@ document.addEventListener('click', async (e) => {
       if (toClose.length > 0) {
         playCloseSound();
         await removeTabs(toClose);
-        showToast('Closed extra TreeTab tabs');
+        showToast('多余的页面已关掉');
         await refreshAll();
       }
     }
@@ -1218,24 +1277,26 @@ document.addEventListener('click', async (e) => {
     const groupId = parseInt(actionEl.dataset.groupId, 10);
     if (!groupId) return;
 
-    const groupTabs = allTabs.filter(t => t.groupId === groupId);
-    if (groupTabs.length === 0) return;
+    const tabIds = confirmedIds(actionEl);
+    if (tabIds.length === 0) {
+      showToast('固定的标签会留下来');
+      return;
+    }
 
-    if (needsConfirm(actionEl, `Confirm: close ${groupTabs.length} tabs`)) return;
+    if (needsConfirm(actionEl, `再点一次，关闭 ${tabIds.length} 个`)) return;
 
-    await deleteGroup(groupId);
+    await deleteGroup(groupId, tabIds);
     return;
   }
 
-  // Close every closable tab in one domain card — bulk, so it asks twice
+  // Close the tabs this button was rendered for — bulk, so it asks twice.
+  // The ids are stamped on the button, so a search that rebuilds the card
+  // with a different set starts the confirmation over.
   if (action === 'close-domain-tabs') {
-    const group = domainGroups.find(g => g.domain === actionEl.dataset.domain);
-    if (!group) return;
-
-    const tabIds = group.tabs.filter(t => !t.pinned).map(t => t.id);
+    const tabIds = confirmedIds(actionEl);
     if (tabIds.length === 0) return;
 
-    if (needsConfirm(actionEl, `Confirm: close ${tabIds.length} tabs`)) return;
+    if (needsConfirm(actionEl, `再点一次，关闭 ${tabIds.length} 个`)) return;
 
     playCloseSound();
     const card = actionEl.closest('.mission-card');
@@ -1249,39 +1310,26 @@ document.addEventListener('click', async (e) => {
 
     await removeTabs(tabIds);
     await refreshAll();
-    showToast(`Closed ${tabIds.length} tabs`);
+    showToast(`已关闭 ${tabIds.length} 个标签`);
     return;
   }
 
-  // Deduplication — one survivor per URL, scoped to what the card shows
+  // Deduplication — one survivor per URL, the extras stamped on the button
   if (action === 'dedup-keep-one') {
-    const group = domainGroups.find(g => g.domain === actionEl.dataset.domain);
-    if (!group) return;
-
-    const byUrl = new Map();
-    for (const tab of group.tabs) {
-      if (tab.pinned) continue;
-      if (!byUrl.has(tab.url)) byUrl.set(tab.url, []);
-      byUrl.get(tab.url).push(tab);
-    }
-
-    const tabIds = [];
-    for (const tabs of byUrl.values()) {
-      if (tabs.length < 2) continue;
-      const keep = tabs.find(t => t.active) || tabs[0];
-      for (const tab of tabs) {
-        if (tab.id !== keep.id) tabIds.push(tab.id);
-      }
-    }
+    const tabIds = confirmedIds(actionEl);
     if (tabIds.length === 0) return;
 
-    if (needsConfirm(actionEl, `Confirm: close ${tabIds.length} duplicates`)) return;
+    if (needsConfirm(actionEl, `再点一次，关掉 ${tabIds.length} 个重复`)) return;
 
     playCloseSound();
     await removeTabs(tabIds);
     await refreshAll();
-    showToast(`Closed ${tabIds.length} duplicates`);
+    showToast(`已关掉 ${tabIds.length} 个重复`);
     return;
+  }
+
+  if (action === 'restore-closed') {
+    await restoreClosed(actionEl.dataset.url || '');
   }
 });
 
@@ -1367,20 +1415,21 @@ function updateTabCountBadge(count) {
 
   badge.classList.remove('green', 'amber', 'red');
   badge.classList.add(tier.level);
-  badge.setAttribute('aria-label', `Tab load: ${tier.label}`);
+  badge.setAttribute('aria-label', `标签数量：${tier.label}`);
 }
 
 function getGreeting() {
   const hour = new Date().getHours();
-  if (hour < 6) return 'Good night';
-  if (hour < 12) return 'Good morning';
-  if (hour < 18) return 'Good afternoon';
-  return 'Good evening';
+  if (hour < 5) return '夜深了';
+  if (hour < 11) return '早上好';
+  if (hour < 14) return '中午好';
+  if (hour < 18) return '下午好';
+  return '晚上好';
 }
 
 function getDateDisplay() {
-  return new Date().toLocaleDateString('en-US', {
-    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+  return new Date().toLocaleDateString('zh-CN', {
+    year: 'numeric', month: 'long', day: 'numeric', weekday: 'long'
   });
 }
 
@@ -1433,6 +1482,46 @@ async function checkTabOutDupes() {
   }
 }
 
+/**
+ * paintBoards()
+ * * Draw both boards and the restore tray from the tabs already in memory.
+ *   Search calls this directly; a Chrome event refetches first via refreshAll().
+ */
+async function paintBoards() {
+  const query = queryValue();
+  const loose = looseTabs().filter(tab => tabMatchesQuery(tab, query));
+  const groups = collectGroupEntries(query);
+  visibleMatchCount = loose.length + groups.reduce((sum, entry) => sum + entry.tabs.length, 0);
+
+  await renderDomains(loose, query, groups.length);
+  await renderGroups(groups);
+  renderRecent();
+  updateSearchStatus();
+}
+
+/**
+ * renderBoards()
+ * * One paint at a time. A search keystroke landing in the middle of a Chrome
+ *   refresh marks the board dirty and runs again with the newer data, instead
+ *   of two paints appending into the same containers.
+ */
+async function renderBoards() {
+  if (boardRendering) {
+    boardDirty = true;
+    return;
+  }
+
+  boardRendering = true;
+  try {
+    do {
+      boardDirty = false;
+      await paintBoards();
+    } while (boardDirty);
+  } finally {
+    boardRendering = false;
+  }
+}
+
 async function refreshAll() {
   // Chrome events and the action handlers both call this. Two passes running
   // at once let the slower query win the last render, so queue instead.
@@ -1445,8 +1534,7 @@ async function refreshAll() {
   try {
     captureScrollPositions();
     await fetchData();
-    await renderDomains();  // Render domain groups first
-    await renderGroups();   // Then render tab groups
+    await renderBoards();
     checkTabOutDupes();
   } catch (err) {
     // A reloaded/unloaded extension leaves this page with no chrome.* APIs:
@@ -1575,7 +1663,7 @@ async function runTabAction(action, successMessage) {
     return true;
   } catch (err) {
     console.error('[TreeTab] Tab action failed:', err);
-    showToast('Action failed');
+    showToast('操作没成功');
     return false;
   } finally {
     await refreshAll();
@@ -1605,7 +1693,63 @@ let armedConfirm = null;
  *   innerHTML on every browser event, so the DOM node cannot hold the state.
  */
 function confirmKey(el) {
-  return `${el.dataset.action}::${el.dataset.domain || el.dataset.groupId || ''}`;
+  // Tab ids, not just the domain: a search between the two clicks rebuilds
+  // the card, and the second click must not close a different set.
+  const scope = el.dataset.tabIds || el.dataset.domain || el.dataset.groupId || '';
+  return `${el.dataset.action}::${scope}`;
+}
+
+/**
+ * confirmedIdList(tabs)
+ * * Stable id list for a bulk button. Sorting keeps the confirm key the
+ *   same when a refresh reorders the card.
+ */
+function confirmedIdList(tabs) {
+  return tabs
+    .map(tab => tab.id)
+    .filter(id => Number.isInteger(id) && id > 0)
+    .sort((a, b) => a - b);
+}
+
+/**
+ * duplicateCloseIds(tabs)
+ * * The unpinned extras a dedupe button would close: one tab per URL stays,
+ *   preferring the active one.
+ */
+function duplicateCloseIds(tabs) {
+  const byUrl = new Map();
+  for (const tab of tabs) {
+    if (tab.pinned) continue;
+    if (!byUrl.has(tab.url)) byUrl.set(tab.url, []);
+    byUrl.get(tab.url).push(tab);
+  }
+
+  const ids = [];
+  for (const group of byUrl.values()) {
+    if (group.length < 2) continue;
+    const keep = group.find(tab => tab.active) || group[0];
+    for (const tab of group) {
+      if (tab.id !== keep.id) ids.push(tab.id);
+    }
+  }
+  return confirmedIdList(ids.map(id => ({ id })));
+}
+
+/**
+ * confirmedIds(el)
+ * * The tab ids stamped on a bulk button. Still-pinned tabs are dropped so
+ *   a pin applied between the two clicks is not closed.
+ */
+function confirmedIds(el) {
+  const wanted = new Set(
+    (el.dataset.tabIds || '')
+      .split(',')
+      .map(part => Number(part))
+      .filter(id => Number.isInteger(id) && id > 0)
+  );
+  return allTabs
+    .filter(tab => wanted.has(tab.id) && !tab.pinned)
+    .map(tab => tab.id);
 }
 
 /**
@@ -1803,12 +1947,16 @@ function updateThemeIcon(theme) {
   const sunIcon = document.querySelector('.icon-sun');
   const moonIcon = document.querySelector('.icon-moon');
 
+  const toggle = document.getElementById('themeToggle');
+
   if (theme === 'dark') {
     if (sunIcon) sunIcon.style.display = 'none';
     if (moonIcon) moonIcon.style.display = 'block';
+    if (toggle) toggle.title = '切换到浅色';
   } else {
     if (sunIcon) sunIcon.style.display = 'block';
     if (moonIcon) moonIcon.style.display = 'none';
+    if (toggle) toggle.title = '切换到深色';
   }
 }
 
@@ -1877,7 +2025,7 @@ function wireBgUploadButton() {
     const file = fileInput.files[0];
 
     if (file && !file.type.startsWith('image/')) {
-      showToast('Please choose an image file');
+      showToast('请选一张图片');
       fileInput.value = '';
       return;
     }
@@ -1889,9 +2037,9 @@ function wireBgUploadButton() {
       await chrome.storage.local.set({ [BG_IMAGE_KEY]: dataUrl });
       applyBackgroundLayer(dataUrl);
       closeBgPopover();
-      showToast('Background image saved');
+      showToast('背景已换上');
     } catch (err) {
-      showToast('Could not save this image (too large?)');
+      showToast('这张图太大，存不下');
     } finally {
       fileInput.value = '';
     }
@@ -1953,7 +2101,7 @@ function wireBgResetButton() {
     }, 400);
 
     closeBgPopover();
-    showToast('Background image removed');
+    showToast('背景已去掉');
   });
 }
 
@@ -1982,12 +2130,243 @@ function watchBgStorageChanges() {
 }
 
 // ================================================================
+// Search and recently closed
+// ================================================================
+
+function resultControls() {
+  return [...document.querySelectorAll('.chip-open, .group-tab-open, .recent-restore')];
+}
+
+/**
+ * wireSearch()
+ * * Live filter. Enter uses the form's submit event, which the browser
+ *   already suppresses while an IME is composing, so the handler does not
+ *   listen for Enter itself.
+ */
+function wireSearch() {
+  const form = document.getElementById('tabSearchForm');
+  const input = document.getElementById('tabSearch');
+  const clearBtn = document.getElementById('tabSearchClear');
+  const hint = document.getElementById('recentHint');
+  if (hint) hint.textContent = `只存在这台电脑上，最多 ${RECENTLY_CLOSED_LIMIT} 条。`;
+  if (!form || !input) return;
+
+  const applyQuery = (value) => {
+    searchQuery = value;
+    if (clearBtn) clearBtn.hidden = !value;
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => { renderBoards(); }, 80);
+  };
+
+  input.addEventListener('input', () => applyQuery(input.value));
+
+  clearBtn?.addEventListener('click', () => {
+    input.value = '';
+    searchQuery = '';
+    clearBtn.hidden = true;
+    clearTimeout(searchTimer);
+    input.focus();
+    renderBoards();
+  });
+
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const first = resultControls()[0];
+    if (first) first.focus();
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.isComposing || event.keyCode === 229) return;
+
+    const typing = document.activeElement && (
+      document.activeElement.tagName === 'INPUT' ||
+      document.activeElement.tagName === 'TEXTAREA'
+    );
+
+    if (event.key === '/' && !typing && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      event.preventDefault();
+      input.focus();
+      return;
+    }
+
+    if (event.key === 'Escape' && document.activeElement === input) {
+      if (input.value) {
+        input.value = '';
+        searchQuery = '';
+        if (clearBtn) clearBtn.hidden = true;
+        clearTimeout(searchTimer);
+        renderBoards();
+      } else {
+        input.blur();
+      }
+      return;
+    }
+
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+
+    const items = resultControls();
+    if (document.activeElement === input && event.key === 'ArrowDown' && items[0]) {
+      event.preventDefault();
+      items[0].focus();
+      return;
+    }
+
+    const index = items.indexOf(document.activeElement);
+    if (index === -1) return;
+
+    if (event.key === 'ArrowUp' && index === 0) {
+      event.preventDefault();
+      input.focus();
+      return;
+    }
+
+    const next = items[index + (event.key === 'ArrowDown' ? 1 : -1)];
+    if (!next) return;
+    event.preventDefault();
+    next.focus();
+  });
+}
+
+function renderRecent() {
+  const section = document.getElementById('recentSection');
+  const list = document.getElementById('recentList');
+  const countEl = document.getElementById('recentCount');
+  if (!section || !list) return;
+
+  const query = queryValue();
+  const items = recentlyClosed.filter(item =>
+    !query || textMatches(query, item.title, item.url, hostOf(item.url))
+  );
+
+  if (items.length === 0) {
+    section.hidden = true;
+    list.replaceChildren();
+    if (countEl) countEl.textContent = '';
+    return;
+  }
+
+  section.hidden = false;
+  if (countEl) countEl.textContent = `${items.length} 条`;
+  list.replaceChildren();
+
+  for (const item of items) {
+    const li = document.createElement('li');
+    li.className = 'recent-item';
+
+    const img = document.createElement('img');
+    img.className = 'recent-favicon';
+    img.alt = '';
+    img.decoding = 'async';
+    img.src = item.favIconUrl || FALLBACK_FAVICON;
+
+    const text = document.createElement('div');
+    text.className = 'recent-text';
+
+    const title = document.createElement('span');
+    title.className = 'recent-title';
+    title.textContent = item.title || item.url;
+    if (!hasCJK(title.textContent) && /[A-Za-z]/.test(title.textContent)) title.lang = 'en';
+
+    const host = document.createElement('span');
+    host.className = 'recent-host';
+    host.textContent = hostOf(item.url);
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'recent-restore';
+    button.dataset.action = 'restore-closed';
+    button.dataset.url = item.url;
+    button.textContent = '恢复';
+    button.setAttribute('aria-label', `恢复：${title.textContent}`);
+
+    text.append(title, host);
+    li.append(img, text, button);
+    list.append(li);
+  }
+}
+
+function updateSearchStatus() {
+  const status = document.getElementById('searchStatus');
+  if (!status) return;
+  if (!queryValue()) {
+    status.textContent = '';
+    return;
+  }
+  status.textContent = visibleMatchCount
+    ? `找到 ${visibleMatchCount} 个标签`
+    : '没有匹配的标签';
+}
+
+function watchRecentlyClosed() {
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local' || !changes[RECENTLY_CLOSED_KEY]) return;
+    recentlyClosed = normalizeRecent(changes[RECENTLY_CLOSED_KEY].newValue);
+    renderRecent();
+    updateSearchStatus();
+  });
+}
+
+/**
+ * restoreClosed(url)
+ * * Reopen in this window and drop the row. The list is written before the
+ *   tab is created: focusing the restored tab navigates away from this page,
+ *   and a write started after that can be dropped.
+ */
+async function restoreClosed(url) {
+  if (!isRestorableUrl(url)) {
+    showToast('这个页面恢复不了');
+    return;
+  }
+
+  const previous = recentlyClosed;
+  const next = recentlyClosed.filter(item => item.url !== url);
+  recentlyClosed = next;
+  renderRecent();
+
+  try {
+    await chrome.storage.local.set({ [RECENTLY_CLOSED_KEY]: next });
+    const current = await chrome.windows.getCurrent();
+    await chrome.tabs.create({ url, windowId: current.id, active: true });
+    showToast('已恢复');
+  } catch (err) {
+    console.error('[TreeTab] Restore failed:', err);
+    recentlyClosed = previous;
+    try {
+      await chrome.storage.local.set({ [RECENTLY_CLOSED_KEY]: previous });
+    } catch { /* the list on screen is put back either way */ }
+    renderRecent();
+    showToast('没能恢复');
+  }
+}
+
+/**
+ * setupUngroupDropzone()
+ * * The upper board is the way out of a group. It only accepts a tab that is
+ *   already grouped, so dragging a loose tab around does not light the board
+ *   up for a no-op.
+ */
+function setupUngroupDropzone() {
+  const section = document.getElementById('domainsSection');
+  if (!section) return;
+
+  setupDropZone(section, tabId => {
+    const tab = allTabs.find(item => item.id === tabId);
+    if (!tab || !tab.groupId || tab.groupId === -1) return;
+    return runTabAction(() => chrome.tabs.ungroup(tabId), '已移出分组');
+  }, () => {
+    const tab = allTabs.find(item => item.id === draggedTabId);
+    return !!(tab && tab.groupId && tab.groupId !== -1);
+  });
+}
+
+// ================================================================
 // Initialization
 // ================================================================
 
 async function init() {
   renderGreeting();
   watchGreeting();
+  wireSearch();
 
   if (!extensionApiAvailable()) {
     // Stale context without chrome APIs: re-enter the extension once,
@@ -2003,18 +2382,22 @@ async function init() {
       THEME_KEY,
       BG_IMAGE_KEY,
       BG_OPACITY_KEY_LEGACY,
+      RECENTLY_CLOSED_KEY,
     ]);
 
     initTheme(stored[THEME_KEY]);
     initBackground(stored[BG_IMAGE_KEY], stored[BG_OPACITY_KEY_LEGACY]);
+    recentlyClosed = normalizeRecent(stored[RECENTLY_CLOSED_KEY]);
   } catch (err) {
     // A failed preference read must never leave the board blank.
     console.error('[TreeTab] Could not load preferences:', err);
     applyTheme(detectDefaultTheme());
   }
 
+  watchRecentlyClosed();
   await refreshAll();
   setupNewGroupDropzone();
+  setupUngroupDropzone();
   watchBrowserState();
 }
 
