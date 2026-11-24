@@ -185,9 +185,9 @@ body.has-bg-image #bgLayer {
   /* No z-index: a stacking context here would cap .bg-popover's layer.
      Background layers sit at z-index -1, below normal flow content. */
   position: relative;
-  max-width: 960px;
+  max-width: 1040px;
   margin: 0 auto;
-  padding: 48px 32px 80px;
+  padding: 40px 32px 64px;
 }
 
 /* ---- Header ---- */
@@ -195,15 +195,15 @@ header {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  margin-bottom: 48px;
-  padding-bottom: 24px;
+  margin-bottom: 36px;
+  padding-bottom: 18px;
   border-bottom: 1px solid var(--warm-gray);
 }
 
 .header-left h1 {
   font-family: var(--font-serif);
   font-weight: 300;
-  font-size: 28px;
+  font-size: 30px;
   letter-spacing: -0.5px;
   color: var(--ink);
   margin-bottom: 4px;
@@ -220,6 +220,53 @@ header {
 .header-right {
   display: flex;
   align-items: center;
+  gap: 8px;
+}
+
+.search-control {
+  position: relative;
+  anchor-name: --search-toggle;
+}
+
+.search-toggle[aria-expanded="true"],
+.search-control:has(:popover-open) .search-toggle {
+  border-color: var(--accent-sage);
+  color: var(--accent-sage);
+}
+
+.search-popover {
+  position: absolute;
+  position-anchor: --search-toggle;
+  inset: auto;
+  margin: 0;
+  margin-block-start: 8px;
+  overflow: visible;
+  border: 1px solid var(--card-border);
+  top: anchor(--search-toggle bottom);
+  right: anchor(--search-toggle right);
+  position-try-fallbacks: flip-block, flip-inline;
+  width: min(360px, calc(100vw - 32px));
+  padding: 14px;
+  background: var(--card-bg);
+  border-radius: 12px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.24), 0 2px 8px rgba(0, 0, 0, 0.12);
+  animation: fadeUp 0.18s ease backwards;
+}
+
+.search-popover:popover-open {
+  display: block;
+}
+
+.search-popover form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.search-popover label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
 }
 
 .theme-toggle {
@@ -362,15 +409,16 @@ body.has-bg-image .group-card,
 body.has-bg-image .mission-card,
 body.has-bg-image .recent-item,
 body.has-bg-image .tab-cleanup-banner {
-  /* High enough that title text sits on the card, not on the photo.
-     Still translucent, so the wallpaper reads through the gaps. */
-  background: color-mix(in srgb, var(--card-bg) 92%, transparent);
-  border-color: color-mix(in srgb, var(--ink) 16%, var(--card-border));
+  /* Let the wallpaper remain visible around and through the working areas.
+     The fill is opaque enough for tab titles, but no longer reads as a full
+     black/white plate. */
+  background: color-mix(in srgb, var(--card-bg) 82%, transparent);
+  border-color: color-mix(in srgb, var(--ink) 10%, var(--card-border));
 }
 
 body.has-bg-image .group-tab-item {
-  background: color-mix(in srgb, var(--card-bg) 96%, transparent);
-  border-color: color-mix(in srgb, var(--card-border) 80%, transparent);
+  background: color-mix(in srgb, var(--card-bg) 88%, transparent);
+  border-color: color-mix(in srgb, var(--card-border) 72%, transparent);
 }
 
 body.has-bg-image .group-header {
@@ -397,13 +445,13 @@ body.has-bg-image .page-chip.clickable:hover {
 }
 
 body.has-bg-image .new-group-dropzone {
-  background: linear-gradient(135deg, rgba(var(--rgb-sage), 0.08), rgba(var(--rgb-sage), 0.14));
-  border-color: rgba(var(--rgb-sage), 0.4);
+  background: color-mix(in srgb, var(--card-bg) 66%, transparent);
+  border-color: rgba(var(--rgb-sage), 0.32);
 }
 
 body.has-bg-image .tab-cleanup-banner {
-  background: rgba(var(--rgb-sage), 0.07);
-  border-color: rgba(var(--rgb-sage), 0.25);
+  background: color-mix(in srgb, var(--card-bg) 82%, transparent);
+  border-color: rgba(var(--rgb-sage), 0.22);
 }
 
 /* A light paper veil, plus solid plates behind headings. Text-shadow alone
@@ -412,34 +460,34 @@ body.has-bg-image #bgLayer::after {
   content: '';
   position: absolute;
   inset: 0;
-  background: color-mix(in srgb, var(--paper) 22%, transparent);
+  background: color-mix(in srgb, var(--paper) 8%, transparent);
 }
 
 body.has-bg-image header,
 body.has-bg-image .tab-search,
 body.has-bg-image .section-heading,
 body.has-bg-image footer {
-  background: color-mix(in srgb, var(--paper) 86%, transparent);
-  border-radius: 16px;
+  background: color-mix(in srgb, var(--paper) 68%, transparent);
+  border-radius: 10px;
 }
 
 body.has-bg-image header {
-  padding: 16px 18px 14px;
-  margin-inline: -8px;
+  padding: 12px 14px 10px;
+  margin-inline: -6px;
   border-bottom-color: transparent;
 }
 
 body.has-bg-image .tab-search {
-  padding: 12px 14px 10px;
+  padding: 10px 12px 8px;
 }
 
 body.has-bg-image .section-heading {
-  padding: 8px 12px 10px;
+  padding: 6px 10px 8px;
 }
 
 body.has-bg-image footer {
-  padding: 14px 16px;
-  margin-inline: -8px;
+  padding: 10px 12px;
+  margin-inline: -6px;
   border-top-color: transparent;
 }
 
@@ -452,7 +500,7 @@ body.has-bg-image .ungroup-hint {
 }
 
 .section {
-  margin-bottom: 48px;
+  margin-bottom: 36px;
 }
 
 .section-header {
@@ -465,7 +513,7 @@ body.has-bg-image .ungroup-hint {
 .section-header h2 {
   font-family: var(--font-serif);
   font-weight: 400;
-  font-size: 18px;
+  font-size: 17px;
   font-style: italic;
   color: var(--muted);
   white-space: nowrap;
@@ -580,8 +628,8 @@ body.is-dragging-grouped .ungroup-hint {
    ================================================================ */
 
 .groups-grid {
-  columns: 280px;
-  column-gap: 12px;
+  columns: 300px;
+  column-gap: 16px;
   margin-bottom: 20px;
 }
 
@@ -598,8 +646,8 @@ body.is-dragging-grouped .ungroup-hint {
 .group-card {
   background: var(--card-bg);
   border: 1px solid var(--warm-gray);
-  border-radius: 12px;
-  padding: 16px;
+  border-radius: 10px;
+  padding: 14px;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -609,7 +657,7 @@ body.is-dragging-grouped .ungroup-hint {
 }
 
 .group-card:hover {
-  box-shadow: 0 4px 16px var(--shadow);
+  box-shadow: 0 3px 12px var(--shadow);
   transform: translateY(-1px);
 }
 
@@ -867,17 +915,17 @@ body.is-dragging-grouped .ungroup-hint {
 
 /* New group drop zone */
 .new-group-dropzone {
-  padding: 24px;
-  background: linear-gradient(135deg, rgba(var(--rgb-sage), 0.05), rgba(var(--rgb-sage), 0.1));
-  border: 2px dashed rgba(var(--rgb-sage), 0.3);
-  border-radius: 12px;
+  padding: 16px;
+  background: rgba(var(--rgb-sage), 0.035);
+  border: 1.5px dashed rgba(var(--rgb-sage), 0.28);
+  border-radius: 10px;
   text-align: center;
   transition: all 0.2s;
   margin-top: 8px;
 }
 
 .new-group-dropzone.drag-over {
-  background: linear-gradient(135deg, rgba(var(--rgb-sage), 0.12), rgba(var(--rgb-sage), 0.2));
+  background: rgba(var(--rgb-sage), 0.16);
   border-color: var(--accent-sage);
   border-style: solid;
 }
@@ -888,7 +936,7 @@ body.is-dragging-grouped .ungroup-hint {
   justify-content: center;
   gap: 10px;
   color: var(--muted);
-  font-size: 14px;
+  font-size: 13px;
 }
 
 .new-group-content svg {
@@ -902,15 +950,15 @@ body.is-dragging-grouped .ungroup-hint {
    ================================================================ */
 
 .missions {
-  columns: 280px;
-  column-gap: 12px;
+  columns: 300px;
+  column-gap: 16px;
 }
 
 .mission-card {
   background: var(--card-bg);
   border: 1px solid var(--warm-gray);
-  border-radius: 12px;
-  padding: 16px;
+  border-radius: 10px;
+  padding: 14px;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -935,7 +983,7 @@ body.is-dragging-grouped .ungroup-hint {
 .mission-card.has-neutral-bar::before { background: var(--warm-gray); }
 
 .mission-card:hover {
-  box-shadow: 0 4px 20px var(--shadow);
+  box-shadow: 0 3px 12px var(--shadow);
   transform: translateY(-1px);
 }
 
@@ -1174,8 +1222,8 @@ body.is-dragging-grouped .ungroup-hint {
    ================================================================ */
 
 footer {
-  margin-top: 48px;
-  padding-top: 20px;
+  margin-top: 36px;
+  padding-top: 16px;
   border-top: 1px solid var(--warm-gray);
   display: flex;
   justify-content: space-between;
@@ -1316,7 +1364,7 @@ footer { animation: fadeUp 0.5s ease 0.3s backwards; }
    ================================================================ */
 
 .tab-search {
-  margin: -8px 0 28px;
+  margin: -4px 0 24px;
 }
 
 .tab-search form {
@@ -1336,26 +1384,29 @@ footer { animation: fadeUp 0.5s ease 0.3s backwards; }
   position: relative;
 }
 
-.tab-search input {
+.tab-search input,
+.search-popover input {
   width: 100%;
   box-sizing: border-box;
   font: inherit;
   font-size: 1rem;
   line-height: 1.4;
-  min-height: 48px;
-  padding: 10px 5.5rem 10px 14px;
+  min-height: 44px;
+  padding: 8px 5.5rem 8px 14px;
   color: var(--ink);
   background: var(--card-bg);
   border: 1px solid var(--muted);
   border-radius: 12px;
 }
 
-.tab-search input::placeholder {
+.tab-search input::placeholder,
+.search-popover input::placeholder {
   color: var(--muted);
   opacity: 1;
 }
 
-.tab-search input::-webkit-search-cancel-button {
+.tab-search input::-webkit-search-cancel-button,
+.search-popover input::-webkit-search-cancel-button {
   appearance: none;
 }
 
@@ -1469,6 +1520,45 @@ footer { animation: fadeUp 0.5s ease 0.3s backwards; }
 .recent-restore:hover {
   border-color: var(--focus-ring);
   background: rgba(var(--rgb-sage), 0.24);
+}
+
+@media (max-width: 680px) {
+  .container {
+    padding: 24px 16px 48px;
+  }
+
+  .search-popover {
+    position: fixed;
+    inset: 72px 16px auto 16px;
+    width: auto;
+    max-width: none;
+  }
+
+  header {
+    margin-bottom: 28px;
+  }
+
+  .header-left h1 {
+    font-size: 26px;
+  }
+
+  .section {
+    margin-bottom: 28px;
+  }
+
+  .groups-grid,
+  .missions {
+    columns: 1;
+  }
+
+  body.has-bg-image header,
+  body.has-bg-image footer {
+    margin-inline: 0;
+  }
+
+  body.has-bg-image .section-heading {
+    padding-inline: 8px;
+  }
 }
 
 /* Actions that only appear on hover must stay reachable without a pointer. */
