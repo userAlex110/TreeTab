@@ -2147,9 +2147,35 @@ function wireSearch() {
   const form = document.getElementById('tabSearchForm');
   const input = document.getElementById('tabSearch');
   const clearBtn = document.getElementById('tabSearchClear');
+  const searchPopover = document.getElementById('searchPopover');
+  const searchToggle = document.getElementById('searchToggleBtn');
   const hint = document.getElementById('recentHint');
   if (hint) hint.textContent = `只存在这台电脑上，最多 ${RECENTLY_CLOSED_LIMIT} 条。`;
   if (!form || !input) return;
+
+  const openSearch = () => {
+    if (searchPopover && !searchPopover.matches(':popover-open')) {
+      searchPopover.showPopover();
+    }
+    requestAnimationFrame(() => input.focus());
+  };
+
+  searchToggle?.addEventListener('click', () => {
+    if (!searchPopover) return;
+    if (searchPopover.matches(':popover-open')) {
+      searchToggle.setAttribute('aria-expanded', 'false');
+    } else {
+      searchToggle.setAttribute('aria-expanded', 'true');
+      requestAnimationFrame(() => input.focus());
+    }
+  });
+
+  searchPopover?.addEventListener('toggle', () => {
+    searchToggle?.setAttribute('aria-expanded', String(searchPopover.matches(':popover-open')));
+  });
+  searchPopover?.addEventListener('beforetoggle', (event) => {
+    if (event.newState === 'open') searchToggle?.setAttribute('aria-expanded', 'true');
+  });
 
   const applyQuery = (value) => {
     searchQuery = value;
@@ -2185,7 +2211,7 @@ function wireSearch() {
 
     if (event.key === '/' && !typing && !event.metaKey && !event.ctrlKey && !event.altKey) {
       event.preventDefault();
-      input.focus();
+      openSearch();
       return;
     }
 
@@ -2198,6 +2224,7 @@ function wireSearch() {
         renderBoards();
       } else {
         input.blur();
+        searchPopover?.hidePopover();
       }
       return;
     }

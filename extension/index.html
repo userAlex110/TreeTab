@@ -23,6 +23,27 @@
       <div class="date" id="dateDisplay"></div>
     </div>
     <div class="header-right">
+      <!-- 搜索浮层：平时不占版面，按 / 或点放大镜时打开 -->
+      <div class="search-control">
+        <button class="theme-toggle search-toggle" id="searchToggleBtn" type="button" title="搜索标签（按 /）" popovertarget="searchPopover" aria-label="搜索标签">
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" d="m21 21-4.35-4.35m1.35-5.15a6.5 6.5 0 1 1-13 0 6.5 6.5 0 0 1 13 0Z" />
+          </svg>
+        </button>
+
+        <div class="search-popover" id="searchPopover" popover>
+          <form id="tabSearchForm" autocomplete="off">
+            <label for="tabSearch">搜索标签</label>
+            <div class="tab-search-field">
+              <input id="tabSearch" name="q" type="search" placeholder="标题、网址或分组" enterkeyhint="search" autocapitalize="off" autocorrect="off" spellcheck="false" aria-describedby="searchHint">
+              <button type="button" class="tab-search-clear" id="tabSearchClear" hidden>清除</button>
+              <button type="submit" class="visually-hidden" tabindex="-1">跳到第一个结果</button>
+            </div>
+            <p id="searchHint" class="search-hint">只搜这个窗口。按 Esc 关闭。</p>
+          </form>
+        </div>
+      </div>
+
       <!-- 自定义背景图按钮 -->
       <div class="bg-control">
         <button class="theme-toggle bg-toggle" id="bgToggleBtn" type="button" title="设置背景" popovertarget="bgPopover">
@@ -59,20 +80,6 @@
     </div>
   </header>
 
-  <!-- ================================================================
-       SEARCH —— 只过滤当前窗口，不离开这台电脑
-       ================================================================ -->
-  <search class="tab-search">
-    <form id="tabSearchForm" autocomplete="off">
-      <label for="tabSearch">搜索</label>
-      <div class="tab-search-field">
-        <input id="tabSearch" name="q" type="search" placeholder="标题、网址或分组" enterkeyhint="search" autocapitalize="off" autocorrect="off" spellcheck="false" aria-describedby="searchHint">
-        <button type="button" class="tab-search-clear" id="tabSearchClear" hidden>清除</button>
-        <button type="submit" class="visually-hidden" tabindex="-1">跳到第一个结果</button>
-      </div>
-      <p id="searchHint" class="search-hint">只搜这个窗口。按 / 聚焦搜索框。</p>
-    </form>
-  </search>
   <p id="searchStatus" class="visually-hidden" aria-live="polite"></p>
 
   <!-- ================================================================
